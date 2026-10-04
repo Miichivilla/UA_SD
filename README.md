@@ -1,18 +1,19 @@
 ```mermaid
-gantt
-    title Planificación del Proyecto WaterManagement
-    dateFormat  YYYY-MM-DD
-    
-    section Implementation
-    Desarrollo WM_Central y Dashboard         :imp1, 2026-10-10, 5d
-    Desarrollo WM_WS_M y WM_WS_E              :imp2, 2026-10-10, 5d
-    Desarrollo WM_FO                          :imp3, after imp1, 3d
-    Pruebas e Integración del Sistema        :imp4, after imp2, 3d
-    Dockerización y Despliegue en Railway     :imp5, after imp4, 2d
-    Redacción de Memoria y Entrega            :imp6, after imp5, 2d
+graph LR
+    classDef research fill:#e1f5fe,stroke:#0288d1,stroke-width:2px,color:#01579b;
+    classDef impl fill:#e8f5e9,stroke:#388e3c,stroke-width:2px,color:#1b5e20;
 
-    section Research
-    Análisis de Sockets y Protocolo STX/ETX :res1, 2026-10-05, 3d
-    Diseño del Broker Kafka y Topics          :res2, after res1, 3d
-    Diseño BD SQLite y Arquitectura           :res3, after res1, 2d
+    subgraph FASE1["FASE 1: RESEARCH (07/Sep - 03/Oct)"]
+        A["<b>Semana 1 (07/Sep)</b><br>Análisis de Requisitos y Sockets"]:::research --> B["<b>Semana 2 (14/Sep)</b><br>Modelado BD SQLite y Tramas Protocolo"]:::research
+        B --> C["<b>Semana 3 (21/Sep)</b><br>Investigación Event Streaming (Kafka)"]:::research
+        C --> D["<b>Semana 4 (28/Sep)</b><br>Despliegue Cloud (Docker & Railway)"]:::research
+    end
+
+    subgraph FASE2["FASE 2: IMPLEMENTACIÓN (04/Oct - 01/Nov)"]
+        E["<b>Semana 5 (04/Oct)</b><br>Módulo Central (WM_Central)"]:::impl --> F["<b>Semana 6 (11/Oct)</b><br>Estaciones Engine y Monitor"]:::impl
+        F --> G["<b>Semana 7 (18/Oct)</b><br>Field Operators e Integración"]:::impl
+        G --> H["<b>Semana 8 (25/Oct)</b><br>Pruebas, Memoria y Entrega"]:::impl
+    end
+
+    D --> E
 ```
