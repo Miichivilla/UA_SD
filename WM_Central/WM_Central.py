@@ -42,7 +42,7 @@ SERVER = '0.0.0.0'
 ADDR = (SERVER, PORT)
 FORMAT = 'utf-8'
 FIN = "FIN"
-MAX_CONEXIONES = 2
+MAX_CONEXIONES = 10
 REGISTRO = "REGISTRO"
 
 def handle_client(conn, addr):
