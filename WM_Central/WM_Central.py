@@ -2,11 +2,10 @@ import socket
 import sqlite3
 import os
 import threading
-from https.server import BaseHTTPRequestHandler, HTTPServer
-port = 5050
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 #Railway
-port = int(os.environ.get("PORT", 3000))
+PORT = int(os.environ.get("PORT", 3000))
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -16,7 +15,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(b"Hello World desde Railway y UA_SD!, por parte de Imran y Michelle")
 
 def lanzar_web():
-    HTTPServer(("0.0.0.0", port), Handler).serve_forever()
+    HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
 
 # Lanzamos el servidor HTTP en segundo plano para que Railway detecte el puerto activo
 threading.Thread(target=lanzar_web, daemon=True).start()
@@ -24,7 +23,7 @@ threading.Thread(target=lanzar_web, daemon=True).start()
 
 #Creamos la base de datos.
 
-connection = sqlite3.conncect('wmcentral.db', check_same_thread = False)
+connection = sqlite3.connect('wmcentral.db', check_same_thread = False)
 cursor = connection.cursor()
 
 cursor.execute(
@@ -57,7 +56,7 @@ def handle_client(conn, addr):
             msg = conn.recv(msg_length).decode(FORMAT)
             if msg == FIN:
                 connected = False
-                print("[DESCONEXIÓN] La estación {addr} ha solicitado finalizar la conexión")
+                print(f"[DESCONEXIÓN] La estación {addr} ha solicitado finalizar la conexión")
                 break
             
             print(f"[MENSAJE] Mensaje recibido de la estación [{addr}]: {msg}")
@@ -65,14 +64,14 @@ def handle_client(conn, addr):
             if REGISTRO in msg:
                 splitted = msg.split('#')
                 if len(splitted)>=3:
-                    ws_id = partes[1]
-                    location = partes[2]
-                    cursor.execute("INSERT OT REPLACE INTO estaciones VALUES (?, ?, ?)", (ws_id, "Available" ,location))
-                    conn.commit()
+                    ws_id = splitted[1]
+                    location = splitted[2]
+                    cursor.execute("INSERT OR REPLACE INTO stations VALUES (?, ?, ?)", (ws_id, "Available" ,location))
+                    connection.commit()
                     print(f"[BASE DE DATOS] Estación '{ws_id}' registrada en la ubicación '{location}'")
-                    conn.send("[REGISTRADO] Estación {ws_id} registrada correctamente".encode(FORMAT))
+                    conn.send(f"[REGISTRADO] Estación {ws_id} registrada correctamente".encode(FORMAT))
                 else:
-                    conn.send("[ERR_REGISTRO] Formato inválido. Uso: REGISTRO#ID#UBICACION".encode(Format))
+                    conn.send("[ERR_REGISTRO] Formato inválido. Uso: REGISTRO#ID#UBICACION".encode(FORMAT))
             else:
                 conn.send(f"CENTRAL OK: mensaje recibido: {msg}".encode(FORMAT))
     print(f"[FIN_CONEXION] Cerrando conexión con {addr}.")
