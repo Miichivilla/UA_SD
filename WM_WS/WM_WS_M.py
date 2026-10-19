@@ -3,9 +3,9 @@ import socket
 import threading
 import time
 
-HOST = "junction.proxy.rlwy.net:59727"
+HOST = "junction.proxy.rlwy.net"
 HEADER = 64
-PORT = 5050
+PORT = 59727
 FORMAT = 'utf-8'
 FIN = "FIN"
 WS_ID = "Station001"
