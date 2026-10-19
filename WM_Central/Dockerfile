@@ -10,4 +10,4 @@ COPY . .
 # Puerto en el que la Central escuchará conexiones TCP Sockets
 EXPOSE 5000
 
-CMD ["python", "main.py"]
+CMD ["python", "WM_Central.py"]
