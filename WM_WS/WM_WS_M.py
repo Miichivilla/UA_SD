@@ -16,7 +16,7 @@ def sendMessageToSocket(socket, message):
     #empaquetamos el mensaje
     msg = message.encode(FORMAT)
     send_length = str(len(msg))
-    send_length += b' ' * (HEADER - len(send_length))
+    send_length = send_length.encode(FORMAT) + b' ' * (HEADER - len(send_length))
     socket.send(send_length)
     socket.send(msg)
     
