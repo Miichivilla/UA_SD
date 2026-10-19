@@ -1,7 +1,6 @@
 from kafka import KafkaProducer, KafkaConsumer
-
-# Sustituye este valor por tu endpoint real del TCP Proxy de Railway
 BOOTSTRAP = "caboose.proxy.rlwy.net:51518"
+
 
 # Productor: envía un mensaje de prueba al topic
 producer = KafkaProducer(bootstrap_servers=BOOTSTRAP)
