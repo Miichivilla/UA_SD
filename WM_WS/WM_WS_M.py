@@ -3,7 +3,7 @@ import socket
 import threading
 import time
 
-HOST = "uasd.railway.internal"
+HOST = "junction.proxy.rlwy.net:59727"
 HEADER = 64
 PORT = 5050
 FORMAT = 'utf-8'
