@@ -5,7 +5,7 @@ from kafka.serializer import Serializer
 
 # Configuración del Broker Kafka
 # Cambia por la URL/puerto de Railway o localhost:9092
-KAFKA_BROKER = 'caboose.proxy.rlwy.net:51518' 
+KAFKA_BROKER = 'INTERNAL://kafka.railway.internal:29092' 
 TOPIC_PETICIONES = 'peticiones_riego'
 
 def crear_productor():
