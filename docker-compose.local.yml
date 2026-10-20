@@ -1,0 +1,49 @@
+# Entorno COMPLETO de la parte "cloud" en un solo PC (para desarrollar y ensayar antes de Railway):
+#   Kafka + WM_Central (+ SQLite en un volumen)
+#   docker compose -f docker-compose.local.yml up -d --build
+# Después se lanzan los módulos del laboratorio (WM_WS, WM_FO) con los scripts de lab/.
+#   Panel: http://localhost:8080      Sockets de monitores: localhost:5050      Kafka: localhost:9092
+# KAFKA_HOST = dirección con la que los clientes (WS/FO) llegan a este PC: localhost, host.docker.internal o la IP del PC.
+services:
+  broker:
+    image: apache/kafka:4.3.1
+    hostname: broker
+    container_name: broker
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://broker:29092,CONTROLLER://broker:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://broker:29092,PLAINTEXT_HOST://${KAFKA_HOST:-localhost}:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@broker:29093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      CLUSTER_ID: "gTBb85_WRXu6oQgq-brTQw"
+
+  central:
+    build: ./WM_Central
+    container_name: wm-central
+    depends_on:
+      - broker
+    ports:
+      - "8080:8080"     # panel web
+      - "5050:5050"     # sockets de los monitores (WM_WS_M)
+    environment:
+      KAFKA_BOOTSTRAP: broker:29092
+      WM_PORT: 5050
+      PORT: 8080
+      WM_DB: /data/wm_central.db
+      PANEL_USER: ${PANEL_USER:-admin}
+      PANEL_PASS: ${PANEL_PASS:-admin}
+    volumes:
+      - central-data:/data
+    restart: unless-stopped
+
+volumes:
+  central-data:

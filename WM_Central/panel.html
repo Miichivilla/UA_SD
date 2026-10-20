@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WM_Central · Panel de control</title>
+<style>
+  :root{
+    --bg:#0e1621; --panel:#16212e; --panel2:#1c2a3a; --line:#2a3b4f; --text:#e8eef5; --muted:#8fa3b8;
+    --green:#1f9d55; --green-b:#2fd37a; --red:#d8382f; --orange:#f08a1c; --grey:#5d6b7a; --blue:#4aa3ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;
+         padding:14px 20px;background:var(--panel);border-bottom:1px solid var(--line)}
+  h1{font-size:19px;margin:0;letter-spacing:.3px}
+  h1 small{color:var(--muted);font-weight:400;margin-left:8px}
+  .chips{display:flex;gap:8px;flex-wrap:wrap}
+  .chip{padding:4px 10px;border-radius:999px;background:var(--panel2);border:1px solid var(--line);font-size:13px;color:var(--muted)}
+  .chip b{color:var(--text)}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;background:var(--grey)}
+  .dot.ok{background:var(--green-b)} .dot.ko{background:var(--red)}
+  main{padding:18px 20px;max-width:1500px;margin:auto}
+  .bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:16px;padding:12px;
+       background:var(--panel);border:1px solid var(--line);border-radius:12px}
+  .bar .grow{flex:1}
+  button{font:inherit;border:0;border-radius:8px;padding:7px 12px;color:#fff;cursor:pointer;font-weight:600}
+  button:hover{filter:brightness(1.12)} button:active{transform:translateY(1px)}
+  .b-start{background:var(--green)} .b-block{background:var(--orange);color:#1a1100} .b-act{background:var(--blue);color:#001a33}
+  .b-neutral{background:var(--panel2);border:1px solid var(--line);color:var(--text)}
+  input{font:inherit;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+  input[type=number]{width:70px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:14px}
+  .card{border-radius:14px;padding:14px;border:2px solid transparent;display:flex;flex-direction:column;gap:8px;min-height:190px}
+  .card .top{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:2px 10px}
+  .card .id{font-size:21px;font-weight:800;white-space:nowrap}
+  .card .loc{opacity:.92}
+  .badge{font-weight:800;font-size:13px;letter-spacing:.4px;text-transform:uppercase}
+  .metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:2px}
+  .metrics div{background:rgba(0,0,0,.22);border-radius:8px;padding:5px 8px;font-size:12px}
+  .metrics b{display:block;font-size:17px}
+  .prog{height:6px;border-radius:3px;background:rgba(0,0,0,.3);overflow:hidden}
+  .prog i{display:block;height:100%;background:#fff;opacity:.85}
+  .actions{margin-top:auto;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .actions button{padding:5px 9px;font-size:13px;box-shadow:inset 0 0 0 2px rgba(0,0,0,.3)}
+  .actions input{width:56px;padding:4px 6px}
+  .s-AVAILABLE{background:var(--green)}
+  .s-WATERING{background:var(--green);animation:blink 1.1s ease-in-out infinite}
+  .s-LEAK{background:var(--red)}
+  .s-OUT_OF_SERVICE{background:var(--orange);color:#1a1100}
+  .s-DISCONNECTED{background:var(--grey)}
+  @keyframes blink{0%,100%{background:var(--green);box-shadow:0 0 0 0 rgba(47,211,122,.0)}
+                   50%{background:var(--green-b);box-shadow:0 0 18px 2px rgba(47,211,122,.55)}}
+  .s-OUT_OF_SERVICE .actions button.b-neutral{color:#fff}
+  .cols{display:grid;grid-template-columns:1.3fr 1fr;gap:14px;margin-top:18px}
+  @media(max-width:980px){.cols{grid-template-columns:1fr}}
+  section{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+  section h2{margin:0 0 8px;font-size:15px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+  #events{max-height:310px;overflow:auto;font:12.5px/1.5 ui-monospace,Menlo,Consolas,monospace}
+  #events div{padding:1px 0;border-bottom:1px dashed #223245}
+  #events .error{color:#ff8b83} #events .t{color:var(--muted)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:4px 6px;border-bottom:1px solid #223245}
+  th{color:var(--muted);font-weight:600}
+  details{margin-top:12px} summary{cursor:pointer;color:var(--muted)}
+  .forms{display:flex;gap:18px;flex-wrap:wrap;margin-top:8px}
+  .forms form{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  #msg{color:#ffb3ad;min-height:20px;margin-top:6px}
+  .legend{display:flex;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+  .legend span::before{content:"";display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+  .l1::before{background:var(--green)} .l2::before{background:var(--green-b)} .l3::before{background:var(--red)}
+  .l4::before{background:var(--orange)} .l5::before{background:var(--grey)}
+</style>
+</head>
+<body>
+<header>
+  <h1>WM_Central <small>WaterManagement · SD 26/27</small></h1>
+  <div class="chips">
+    <span class="chip"><span id="kdot" class="dot"></span>Kafka <b id="kaddr">-</b></span>
+    <span class="chip">Sockets WS_M <b id="sport">-</b></span>
+    <span class="chip">Activo <b id="uptime">-</b></span>
+    <span class="chip">Hora <b id="clock">--:--:--</b></span>
+  </div>
+</header>
+<main>
+  <div class="bar">
+    <b>Todas las WS:</b>
+    <label>Duración <input id="allDur" type="number" min="5" max="600" value="30"> s</label>
+    <button class="b-start" onclick="cmd('start','ALL','allDur')">▶ Iniciar riego</button>
+    <button class="b-block" onclick="cmd('block','ALL')">■ Bloquear (Out of Service)</button>
+    <button class="b-act" onclick="cmd('activate','ALL')">✔ Activar</button>
+    <span class="grow"></span>
+    <div class="legend">
+      <span class="l1">Available</span><span class="l2">Watering (parpadea)</span>
+      <span class="l3">Leak</span><span class="l4">Out of Service</span><span class="l5">Disconnected</span>
+    </div>
+  </div>
+  <div id="msg"></div>
+  <div id="grid" class="grid"></div>
+
+  <div class="cols">
+    <section><h2>Eventos en tiempo real</h2><div id="events"></div></section>
+    <section><h2>Últimos riegos (BD SQLite)</h2>
+      <table><thead><tr><th>Hora</th><th>WS</th><th>Operario</th><th>Estado</th><th>Litros</th><th>Motivo</th></tr></thead>
+      <tbody id="hist"></tbody></table>
+    </section>
+  </div>
+
+  <details><summary>Administración (altas en la BD)</summary>
+    <div class="forms">
+      <form onsubmit="return add('ws',this)"><b>Nueva WS</b>
+        <input name="id" placeholder="ID (WS-04)" required> <input name="location" placeholder="Ubicación" required>
+        <button class="b-neutral">Dar de alta</button></form>
+      <form onsubmit="return add('operator',this)"><b>Nuevo operario</b>
+        <input name="id" placeholder="ID (OP-06)" required> <input name="name" placeholder="Nombre">
+        <button class="b-neutral">Dar de alta</button></form>
+    </div>
+    <p style="color:var(--muted);font-size:13px">Operarios registrados: <span id="ops">-</span></p>
+  </details>
+</main>
+<script>
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmtUp = s => s < 60 ? s + ' s' : s < 3600 ? Math.floor(s/60) + ' min' : Math.floor(s/3600) + ' h ' + Math.floor(s%3600/60) + ' min';
+async function api(path, body){
+  const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  const j = await r.json(); if(!r.ok) throw new Error(j.error || r.status); return j;
+}
+async function cmd(c, ws, durId){
+  const duration = durId ? +document.getElementById(durId).value : 30;
+  try { await api('/api/cmd', {cmd:c, ws, duration}); document.getElementById('msg').textContent=''; refresh(); }
+  catch(e){ document.getElementById('msg').textContent = 'Error: ' + e.message; }
+}
+async function add(kind, form){
+  const body = Object.fromEntries(new FormData(form));
+  try { await api('/api/' + kind, body); form.reset(); document.getElementById('msg').textContent=''; refresh(); }
+  catch(e){ document.getElementById('msg').textContent = 'Error: ' + e.message; }
+  return false;
+}
+function card(w){
+  const watering = w.state === 'WATERING';
+  const pct = watering && w.duration ? Math.min(100, 100*w.elapsed/w.duration) : 0;
+  let body = '';
+  if (watering) body = `<div class="metrics"><div>Caudal<b>${w.flow} L/min</b></div><div>Volumen<b>${w.volume} L</b></div><div>Operario<b>${esc(w.operator)}</b></div></div>
+                        <div class="prog"><i style="width:${pct}%"></i></div>`;
+  else body = `<div class="metrics"><div>Agua total<b>${w.total} L</b></div><div>Estado monitor<b>${w.state==='DISCONNECTED'?'—':esc(w.health)}</b></div><div>Bloqueo<b>${w.blocked?'SÍ':'no'}</b></div></div>`;
+  const label = w.state === 'OUT_OF_SERVICE' ? 'Out of Service · Fuera de servicio' : esc(w.label);
+  return `<div class="card s-${w.state}">
+    <div class="top"><span class="id">${esc(w.id)}</span><span class="badge">${label}</span></div>
+    <div class="loc">📍 ${esc(w.location)}</div>
+    ${watering ? `<div>Agua suministrada total: <b>${w.total} L</b></div>` : ''}
+    ${body}
+    <div class="actions">
+      <input id="d_${esc(w.id)}" type="number" min="5" max="600" value="30" title="duración (s)">
+      <button class="b-start" onclick="cmd('start','${esc(w.id)}','d_${esc(w.id)}')">▶ Regar</button>
+      <button class="b-block" onclick="cmd('block','${esc(w.id)}')">■ Bloquear</button>
+      <button class="b-act" onclick="cmd('activate','${esc(w.id)}')">✔ Activar</button>
+    </div></div>`;
+}
+let editing = null;
+async function refresh(){
+  let s; try { s = await (await fetch('/api/state', {cache:'no-store'})).json(); } catch(e){ return; }
+  document.getElementById('clock').textContent = s.now;
+  document.getElementById('uptime').textContent = fmtUp(s.uptime);
+  document.getElementById('kaddr').textContent = s.kafka_addr;
+  document.getElementById('sport').textContent = ':' + s.socket_port;
+  document.getElementById('kdot').className = 'dot ' + (s.kafka ? 'ok' : 'ko');
+  // no repintar las tarjetas mientras el usuario escribe en una duración
+  const ae = document.activeElement;
+  if (!(ae && ae.tagName === 'INPUT' && ae.id.startsWith('d_'))) {
+    const keep = {}; document.querySelectorAll('.card input').forEach(i => keep[i.id] = i.value);
+    document.getElementById('grid').innerHTML = s.wss.map(card).join('') || '<p>No hay WS registradas.</p>';
+    document.querySelectorAll('.card input').forEach(i => { if (keep[i.id]) i.value = keep[i.id]; });
+  }
+  document.getElementById('events').innerHTML = s.events.map(e =>
+    `<div class="${e.level}"><span class="t">${esc(e.ts)}</span> ${esc(e.msg)}</div>`).join('');
+  document.getElementById('hist').innerHTML = s.history.map(h =>
+    `<tr><td>${h.started_at ? new Date(h.started_at*1000).toLocaleTimeString() : '-'}</td><td>${esc(h.ws_id)}</td><td>${esc(h.operator_id)}</td>
+     <td>${esc(h.status)}</td><td>${(+h.volume).toFixed(1)}</td><td>${esc(h.reason||'')}</td></tr>`).join('');
+  document.getElementById('ops').textContent = s.operators.map(o => o.id).join(', ');
+}
+refresh(); setInterval(refresh, 1000);
+</script>
+</body>
+</html>

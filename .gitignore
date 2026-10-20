@@ -1,1 +1,10 @@
-cliente_concurrente.py
+__pycache__/
+*.pyc
+data/
+*.db
+*.db-wal
+*.db-shm
+*.log
+.env
+lab/lab.env
+tests/_runs/

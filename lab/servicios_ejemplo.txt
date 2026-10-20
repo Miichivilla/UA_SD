@@ -1,0 +1,6 @@
+# Servicios que el operario solicitará UNO TRAS OTRO (espera 4 s tras cada conclusión).
+# Formato: ID_DE_LA_WS#SEGUNDOS      (SEGUNDOS es opcional)
+WS-01#15
+WS-02#10
+WS-03
+WS-99#10
