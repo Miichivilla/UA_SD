@@ -1,21 +1,20 @@
 import time
+import os
+import time
 import json
-from kafka import KafkaProducer
-from kafka.serializer import Serializer
+from confluent_kafka import Producer
 
 # Configuración del Broker Kafka
-# Cambia por la URL/puerto de Railway o localhost:9092
-KAFKA_BROKER = 'caboose.proxy.rlwy.net:51518' 
+KAFKA_BROKER = 'altaria.proxy.rlwy.net:59981' 
 TOPIC_PETICIONES = 'peticiones_riego'
 
 def crear_productor():
-    """Crea y devuelve la instancia del productor de Kafka."""
+    """Crea y devuelve la instancia del productor de Kafka universal."""
     try:
-        producer = KafkaProducer(
-            bootstrap_servers=[KAFKA_BROKER],
-            value_serializer=lambda v: json.dumps(v).encode('utf-8'),
-            request_timeout_ms=10000  # Tiempo de espera máximo de conexión
-        )
+        conf = {
+            'bootstrap.servers': KAFKA_BROKER,
+        }
+        producer = Producer(conf)
         print(f"[WM_FO] Conectado a Kafka Broker en: {KAFKA_BROKER}")
         return producer
     except Exception as e:
@@ -32,7 +31,9 @@ def enviar_solicitud_riego(producer, id_operador, id_estacion, duracion):
     }
     
     # Envío del mensaje al tópico
-    producer.send(TOPIC_PETICIONES, value=mensaje)
+    valor_json = json.dumps(mensaje).encode('utf-8')
+    producer.produce(TOPIC_PETICIONES, value=valor_json, callback=delivery_report)
+    producer.poll(0)
     producer.flush() # Asegura el envío inmediato
     
     print(f"[WM_FO] Solicitud enviada a Kafka -> Tópico '{TOPIC_PETICIONES}': {mensaje}")
@@ -67,6 +68,7 @@ def procesar_fichero_solicitudes(ruta_archivo, id_operador="FO_01"):
     except FileNotFoundError:
         print(f"[ERROR] El archivo {ruta_archivo} no existe.")
     finally:
+        producer.flush()
         producer.close()
 
 if __name__ == "__main__":
