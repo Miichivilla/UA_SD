@@ -1,20 +1,3 @@
-#!/usr/bin/env python3
-"""
-WM_FO - Aplicación del operario de campo (Field Operator) · SD 26/27.
-
-Uso:
-    python wm_fo.py --kafka HOST:PUERTO --id FO_01 [--file solicitudes.txt]
-
-  --kafka  IP/host y puerto del broker Kafka
-  --id     ID del operario
-  --file   (opcional) fichero de peticiones "ID_WS,segundos" que se procesa automáticamente:
-           envía una, espera a que termine (éxito o fracaso), espera 4 s y pasa a la siguiente.
-También por variables de entorno: KAFKA_BOOTSTRAP, FO_ID, FO_FILE.
-
-Kafka:
-  envía  -> wm.requests  {"t":"REQ", req_id, op, ws, src:"FO", duration}
-  recibe <- wm.fo.notify (solo los mensajes con su op) y wm.status (latido de Central + lista de WS)
-"""
 import argparse
 import sys
 import threading
@@ -24,7 +7,6 @@ from wm_common import (T_FO, T_REQ, T_STATUS, color, connect_kafka, env, log, ne
 
 CENTRAL_TIMEOUT = 3.5      # s sin latido de Central -> "Imposible conectar con WM_Central"
 AUTH_TIMEOUT = 15          # s máximo esperando la autorización/denegación
-
 
 class FO:
     def __init__(self, args):
@@ -44,7 +26,7 @@ class FO:
     def central_up(self):
         return time.time() - self.last_status < CENTRAL_TIMEOUT
 
-    # ------------------------------------------------------------------ hilos Kafka
+    # hilos Kafka
     def status_loop(self):
         c = self.bus.tail_consumer([T_STATUS])
         while True:
@@ -93,9 +75,8 @@ class FO:
                 w["result"] = t
                 w["event"].set()
 
-    # ------------------------------------------------------------------ peticiones
+    #  peticiones
     def request(self, ws, duration):
-        """Envía una petición y espera a que concluya. Devuelve 'END', 'DENIED' o 'ERROR'."""
         if not self.central_up():
             self.say(f"No se puede pedir riego en {ws}: Imposible conectar con WM_Central", "red")
             return "ERROR"
@@ -103,8 +84,7 @@ class FO:
         w = {"event": threading.Event(), "result": None, "authorized": False}
         with self.lock:
             self.waiters[req] = w
-        ok = self.bus.send_sync(T_REQ, {"t": "REQ", "req_id": req, "op": self.op, "ws": ws,
-                                        "src": "FO", "duration": int(duration)}, key=ws)
+        ok = self.bus.send_sync(T_REQ, {"t": "REQ", "req_id": req, "op": self.op, "ws": ws, "src": "FO", "duration": int(duration)}, key=ws)
         if not ok:
             self.say("Imposible enviar la petición (Kafka no responde)", "red")
             return "ERROR"
@@ -115,8 +95,7 @@ class FO:
             if w["authorized"]:
                 limit = int(duration) + 120      # ya está regando: esperamos al resumen final
             if not self.central_up() and not warned:
-                self.say("Imposible conectar con WM_Central. La WS terminará el riego; "
-                         "el resumen llegará cuando Central vuelva.", "red")
+                self.say("Imposible conectar con WM_Central. La WS terminará el riego; " "el resumen llegará cuando Central vuelva.", "red")
                 warned = True
             if time.time() - t0 > limit:
                 self.say(f"Sin respuesta de WM_Central para {req}. Se pasa a la siguiente.", "red")
@@ -147,8 +126,7 @@ class FO:
         if not self.central_up():
             self.say("Imposible conectar con WM_Central", "red")
             return
-        cols = {"AVAILABLE": "green", "WATERING": "green", "LEAK": "red",
-                "OUT_OF_SERVICE": "orange", "DISCONNECTED": "gray"}
+        cols = {"AVAILABLE": "green", "WATERING": "green", "LEAK": "red","OUT_OF_SERVICE": "orange", "DISCONNECTED": "gray"}
         print(color(f"  {'ID':<12}{'UBICACIÓN':<20}ESTADO", "bold"))
         for w in self.status:
             print(color(f"  {w['id']:<12}{w['location'][:19]:<20}{w['label']}", cols.get(w["state"])))
@@ -178,7 +156,6 @@ class FO:
             elif op == "0":
                 return
 
-
 def main():
     ap = argparse.ArgumentParser(description="WM_FO - Aplicación del operario")
     ap.add_argument("--kafka", default=env("KAFKA_BOOTSTRAP", "localhost:9092"), help="host:puerto del broker Kafka")
@@ -199,7 +176,6 @@ def main():
     except KeyboardInterrupt:
         pass
     print("\nWM_FO detenido.")
-
 
 if __name__ == "__main__":
     main()
