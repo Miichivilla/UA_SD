@@ -7,7 +7,8 @@ import sys
 import threading
 import time
 
-from WM_WS_M import (BusError, ConnectionClosed, KafkaBus, ProtocolError, T_CMD, T_EVT, T_REQ,
+# Las utilidades comunes (tramas de sockets, Kafka, colores...) están en wm_common.py
+from wm_common import (BusError, ConnectionClosed, KafkaBus, ProtocolError, T_CMD, T_EVT, T_REQ,
                        color, connect, env, log, new_id, parse_hostport, poll_json, split_msg)
 
 try:                     # lectura de UNA tecla sin Enter (Linux/macOS/contenedor con -it)
