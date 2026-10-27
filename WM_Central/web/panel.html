@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WM_Central · WaterManagement</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <!-- Cabecera -->
+  <header class="topbar">
+    <div class="brand"><b>WM_Central</b> <span>WaterManagement</span></div>
+    <div class="conn" id="conn" title="Estado de la conexión con Kafka">
+      <span class="dot"></span><span id="conn-text">Conectando…</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- Órdenes para todas las WS -->
+    <section class="toolbar panel">
+      <b>Todas las WS:</b>
+      <label>Duración <input id="dur-all" type="number" min="1" value="30"> s</label>
+      <button class="btn start" data-action="start" data-ws="ALL">&#9654; Iniciar riego</button>
+      <button class="btn block" data-action="block" data-ws="ALL">&#9632; Bloquear</button>
+      <button class="btn activate" data-action="activate" data-ws="ALL">&#10004; Activar</button>
+    </section>
+
+    <!-- Tarjetas de las estaciones (las genera panel.js) -->
+    <section class="grid" id="grid">
+      <p class="empty" id="empty">No hay WS registradas. Arranca un WM_WS_M con <code>--location</code> para dar de alta una.</p>
+    </section>
+
+    <!-- Eventos y riegos -->
+    <section class="bottom">
+      <div class="panel">
+        <h2>Eventos en tiempo real</h2>
+        <ul class="events" id="events"></ul>
+      </div>
+      <div class="panel">
+        <h2>Últimos riegos (BD SQLite)</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Hora</th><th>WS</th><th>Operario</th><th>Estado</th><th>Litros</th><th>Motivo</th></tr></thead>
+            <tbody id="waterings"><tr><td colspan="6" class="muted">Sin riegos todavía</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>Imran y Michelle</footer>
+  <div class="toast" id="toast"></div>
+
+  <script src="panel.js"></script>
+</body>
+</html>

@@ -1,28 +1,12 @@
-#!/usr/bin/env python3
-"""
-WM_Central - Central de control de WaterManagement (SD 26/27).
-
-Uso:
-    python WM_Central.py --port 5050 --kafka localhost:9092 [--http-port 3000] [--db wmcentral.db]
-Todos los parámetros pueden darse también por variables de entorno (útil en Railway):
-    WM_PORT, KAFKA_BOOTSTRAP, PORT (HTTP), WM_DB
-
-Comunicaciones:
-  - Sockets (tramas <STX><DATA><ETX><LRC>) con los Monitores (WM_WS_M):
-        REGISTRO#id#ubicacion  -> OK#mensaje | DENIED#motivo
-        AUTH#id                -> OK#id#ubicacion#bloqueada(0/1) | DENIED#motivo
-        STATUS#id#OK|KO#motivo -> ACK#bloqueada(0/1)          (cada segundo = latido)
-        FIN
-  - Kafka con Engines (WM_WS_E) y Field Operators (WM_FO)  (ver topics en wm_common.py)
-  - HTTP: panel web en http://<host>:<PORT>/  (colores, parpadeo y botones de órdenes)
-"""
 import argparse
 import json
+import os
 import socket
 import sqlite3
 import sys
 import threading
 import time
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from wm_common import (T_CMD, T_EVT, T_FO, T_REQ, T_STATUS, ConnectionClosed, FramedConn, ProtocolError,
@@ -39,11 +23,22 @@ LABEL = {AVAILABLE: "Available", WATERING: "Watering", LEAK: "Leak", OUT: "Out o
 BG = {AVAILABLE: "\033[42;30m", WATERING: "\033[42;30;5m", LEAK: "\033[41;97m",
       OUT: "\033[48;5;208;30m", DISCONNECTED: "\033[100;97m"}
 
+# Carpeta con la interfaz web (archivos independientes del código Python)
+WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+WEB_FILES = {"/": ("panel.html", "text/html; charset=utf-8"),
+             "/panel.html": ("panel.html", "text/html; charset=utf-8"),
+             "/panel.css": ("panel.css", "text/css; charset=utf-8"),
+             "/panel.js": ("panel.js", "application/javascript; charset=utf-8")}
+
+# Últimos eventos para el apartado "Eventos en tiempo real" del panel web
+EVENTS = deque(maxlen=200)
+
+def add_event(msg, col=None):
+    EVENTS.append({"ts": time.strftime("%H:%M:%S"), "msg": msg, "col": col})
 
 def say(msg, col=None):
     log("CENTRAL", msg, col)
-
-
+    add_event(msg, col)
 # ============================================================================ base de datos
 class DB:
     def __init__(self, path):
@@ -67,8 +62,6 @@ class DB:
             cur = self.conn.execute(sql, args)
             self.conn.commit()
             return cur.fetchall()
-
-
 # ============================================================================ estado de una WS
 class WS:
     def __init__(self, ws_id, location, blocked=False):
@@ -93,8 +86,6 @@ class WS:
         if self.session:
             return WATERING
         return AVAILABLE
-
-
 # ============================================================================ Central
 class Central:
     def __init__(self, args):
@@ -240,6 +231,9 @@ class Central:
             s = ws.session
             s.update(flow=m.get("flow", 0.0), volume=m.get("volume", 0.0), elapsed=m.get("elapsed", 0))
             op = s["op"]
+        # solo al panel web (en la terminal ya se ve en la tabla, que se repinta cada segundo)
+        add_event(f"[{op}] Regando en {ws_id}: {s['flow']:.1f} L/min | {s['volume']:.2f} L acumulados | "
+                  f"{s['elapsed']}/{s['duration']} s")
         self.notify_fo(op, req_id, "TELEMETRY", "", ws=ws_id, flow=s["flow"], volume=s["volume"],
                        elapsed=s["elapsed"], duration=s["duration"])
 
@@ -433,8 +427,24 @@ class Central:
                             "flow": s.get("flow", 0.0), "volume": s.get("volume", 0.0),
                             "op": s.get("op", ""), "elapsed": s.get("elapsed", 0),
                             "duration": s.get("duration", 0), "total": round(ws.total, 2),
-                            "reason": ws.health_reason if st == LEAK else ""})
+                            "reason": ws.health_reason if st == LEAK else "",
+                            "health": ws.health if ws.connected else None, "blocked": ws.blocked})
             return out
+
+    def recent_waterings(self, n=15):
+        """Riegos en curso (tabla sessions) + últimos terminados (tabla waterings) para el panel web."""
+        with self.lock:
+            live = {ws.session["req_id"]: ws.session["volume"] for ws in self.ws.values() if ws.session}
+            cut = set(self.interrupted)
+        rows = []
+        for req, ws_id, op, _dur, started in self.db.q("SELECT req_id, ws, op, duration, started FROM sessions"):
+            rows.append({"ts": started, "ws": ws_id, "op": op, "volume": live.get(req, 0.0), "reason": "",
+                         "state": "INTERRUMPIDO" if req in cut else "ACTIVE"})
+        for _req, ws_id, op, vol, _dur, reason, ended in self.db.q(
+                "SELECT * FROM waterings ORDER BY ended DESC LIMIT ?", (n,)):
+            rows.append({"ts": ended, "ws": ws_id, "op": op, "volume": vol, "reason": reason, "state": "FINALIZADO"})
+        rows.sort(key=lambda r: r["ts"] or 0, reverse=True)
+        return rows[:n]
 
     def panel_text(self):
         rows = self.snapshot()
@@ -486,12 +496,27 @@ class Central:
                 self.end_headers()
                 self.wfile.write(body)
 
+            def _json(self, data):
+                self._send(200, json.dumps(data).encode(), "application/json")
+
             def do_GET(self):
-                if self.path.startswith("/api/state"):
-                    data = {"kafka": central.bus is not None, "ws": central.snapshot()}
-                    self._send(200, json.dumps(data).encode(), "application/json")
+                path = self.path.split("?")[0]
+                if path == "/api/state":
+                    self._json({"kafka": central.bus is not None, "ws": central.snapshot()})
+                elif path == "/api/events":
+                    self._json(list(EVENTS)[-100:])
+                elif path == "/api/waterings":
+                    self._json(central.recent_waterings())
+                elif path in WEB_FILES:
+                    # Se lee el archivo en cada petición: se puede retocar el diseño sin reiniciar la Central
+                    name, ctype = WEB_FILES[path]
+                    try:
+                        with open(os.path.join(WEB_DIR, name), "rb") as f:
+                            self._send(200, f.read(), ctype)
+                    except FileNotFoundError:
+                        self._send(500, f"Falta el archivo web/{name}".encode(), "text/plain; charset=utf-8")
                 else:
-                    self._send(200, PANEL_HTML.encode("utf-8"), "text/html; charset=utf-8")
+                    self._send(404, b"", "text/plain")
 
             def do_POST(self):
                 if self.path.startswith("/api/cmd"):
@@ -507,42 +532,6 @@ class Central:
                     self._send(404, b"", "text/plain")
 
         ThreadingHTTPServer(("0.0.0.0", self.args.http_port), Handler).serve_forever()
-
-
-PANEL_HTML = """<!doctype html><html lang="es"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>WM_Central</title>
-<style>
-body{font-family:system-ui,Segoe UI,Arial,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:16px}
-h1{font-size:20px;margin:0 0 4px}.sub{color:#94a3b8;font-size:13px;margin-bottom:12px}
-table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:8px 10px;text-align:left}
-th{background:#1e293b;color:#94a3b8;font-weight:600}tr{border-bottom:2px solid #0f172a}
-.AVAILABLE{background:#16a34a;color:#fff}.WATERING{background:#16a34a;color:#fff;animation:blink 1s infinite}
-.LEAK{background:#dc2626;color:#fff}.OUT_OF_SERVICE{background:#f97316;color:#111}.DISCONNECTED{background:#6b7280;color:#fff}
-@keyframes blink{50%{background:#4ade80}}
-button{border:0;border-radius:4px;padding:4px 8px;margin:1px;cursor:pointer;font-size:12px}
-.bar{display:flex;gap:6px;align-items:center;margin:10px 0;flex-wrap:wrap}input{width:60px;padding:4px}
-</style></head><body>
-<h1>WM_Central · Panel de monitorización</h1>
-<div class="sub">WaterManagement · SD 26/27 · Imran y Michelle · Kafka: <b id="k">-</b></div>
-<div class="bar">Todas las WS: <button onclick="cmd('start','ALL')">Iniciar riego</button>
-<button onclick="cmd('block','ALL')">Bloquear</button><button onclick="cmd('activate','ALL')">Activar</button>
-&nbsp; Duración (s): <input id="dur" type="number" value="20"></div>
-<table><thead><tr><th>ID</th><th>Ubicación</th><th>Estado</th><th>Caudal</th><th>Volumen</th>
-<th>Operario</th><th>Total</th><th>Órdenes</th></tr></thead><tbody id="t"></tbody></table>
-<script>
-async function cmd(a,ws){await fetch('/api/cmd',{method:'POST',body:JSON.stringify({action:a,ws:ws,
-duration:+document.getElementById('dur').value||20})});}
-async function load(){try{const r=await (await fetch('/api/state')).json();
-document.getElementById('k').textContent=r.kafka?'OK':'CAÍDO';
-document.getElementById('t').innerHTML=r.ws.map(w=>{const wat=w.state=='WATERING';
-return `<tr class="${w.state}"><td><b>${w.id}</b></td><td>${w.location}</td><td>${w.label}${w.reason?' · '+w.reason:''}</td>
-<td>${wat?w.flow.toFixed(1)+' L/min':''}</td><td>${wat?w.volume.toFixed(2)+' L ('+w.elapsed+'/'+w.duration+' s)':''}</td>
-<td>${wat?w.op:''}</td><td>${w.total.toFixed(2)} L</td><td><button onclick="cmd('start','${w.id}')">Regar</button>
-<button onclick="cmd('block','${w.id}')">Bloquear</button><button onclick="cmd('activate','${w.id}')">Activar</button></td></tr>`}).join('')
-||'<tr><td colspan=8>No hay WS registradas</td></tr>';}catch(e){document.getElementById('k').textContent='sin conexión';}}
-load();setInterval(load,1000);
-</script></body></html>"""
-
 
 def main():
     ap = argparse.ArgumentParser(description="WM_Central - Central de WaterManagement")
@@ -564,7 +553,6 @@ def main():
             time.sleep(3600)
     except KeyboardInterrupt:
         say("WM_Central detenida")
-
 
 if __name__ == "__main__":
     main()
