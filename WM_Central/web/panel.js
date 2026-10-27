@@ -1,18 +1,18 @@
 const BADGE = {
-  AVAILABLE: "Disponible",
-  WATERING: "Regando",
-  LEAK: "Leak / Fuga",
-  OUT_OF_SERVICE: "Out of Service / Fuera de servicio",
-  DISCONNECTED: "Desconectada",
+  AVAILABLE: "AVAILABLE / Disponible",
+  WATERING: "WATERING / Regando",
+  LEAK: "LEAK / Fuga",
+  OUT_OF_SERVICE: "OUT_OF_SERVICE / Fuera de servicio",
+  DISCONNECTED: "DISCONNECTED / Desconectada",
 };
 const REASON = {
-  TIEMPO: "Tiempo cumplido", MANUAL_WS: "Finalizado en la WS", FUGA: "Fuga / avería",
-  BLOQUEO: "Bloqueada por Central", MONITOR: "Monitor caído", CENTRAL: "Parada por Central",
-  INTERRUMPIDO: "Engine interrumpido",
+  TIEMPO: "TIEMPO / Tiempo cumplido", MANUAL_WS: "MANUAL_WS / Finalizado en la WS", FUGA: "FUGA / Fuga / avería",
+  BLOQUEO: "BLOQUEO / Bloqueada por Central", MONITOR: "MONITOR / Monitor caído", CENTRAL: "CENTRAL / Parada por Central",
+  INTERRUMPIDO: "INTERRUMPIDO / Engine interrumpido",
 };
 
 const $ = (id) => document.getElementById(id);
-const cards = {};          // id de WS -> elementos de su tarjeta (se crean una vez y se actualizan)
+const cards = {};
 
 // ------------------------------------------------------------------ órdenes
 async function sendCmd(action, ws, duration) {
@@ -46,7 +46,7 @@ function toast(text) {
   toastTimer = setTimeout(() => t.classList.remove("show"), 2200);
 }
 
-// ------------------------------------------------------------------ utilidades DOM
+// utilidades DOM
 function el(tag, cls, text) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
@@ -69,7 +69,7 @@ function button(cls, text, action, ws) {
   return b;
 }
 
-// ------------------------------------------------------------------ tarjetas
+//tarjetas
 function createCard(id) {
   const root = el("article", "card");
   const head = el("div", "card-head");
@@ -157,11 +157,11 @@ function renderCards(list) {
   }
 }
 
-// ------------------------------------------------------------------ eventos y riegos
+//  eventos y riegos
 function renderEvents(list) {
   const ul = $("events");
   const prev = ul.scrollTop;
-  const atTop = prev < 10;                            // si el usuario ha bajado, no le movemos la lista
+  const atTop = prev < 10;                         
   ul.innerHTML = "";
   for (const ev of list.slice().reverse()) {          // el más reciente arriba
     const li = el("li", ev.col || "");
@@ -202,7 +202,7 @@ function setConn(ok, text) {
   $("conn-text").textContent = text;
 }
 
-// ------------------------------------------------------------------ bucle de refresco
+//bucle de refresco
 async function getJSON(url) {
   const r = await fetch(url, { cache: "no-store" });
   if (!r.ok) throw new Error(r.status);

@@ -1,16 +1,3 @@
-"""
-wm_common.py - Utilidades compartidas por WM_Central, WM_WS (Monitor y Engine) y WM_FO.
-
-IMPORTANTE: este fichero está COPIADO en las carpetas WM_Central, WM_WS y WM_FO porque
-cada módulo se construye con su propio Dockerfile (y Railway solo ve su carpeta).
-Si lo modificáis, copiadlo en las tres carpetas.
-
-Contiene:
-  1. Utilidades de consola: color(), log(), env(), new_id(), parse_hostport()
-  2. Protocolo de sockets con tramas  <STX><DATA><ETX><LRC>  y confirmación <ACK>/<NACK>
-  3. KafkaBus: envoltorio sencillo de confluent_kafka (productor + consumidores)
-  4. Nombres de los topics de Kafka
-"""
 import json
 import os
 import socket
@@ -20,7 +7,7 @@ import time
 import uuid
 from datetime import datetime
 
-# ============================================================================ 1. utilidades
+# 1. utilidades
 _COLORS = {
     "red": "\033[91m", "green": "\033[92m", "yellow": "\033[93m", "blue": "\033[94m",
     "cyan": "\033[96m", "orange": "\033[38;5;208m", "gray": "\033[90m", "bold": "\033[1m",
@@ -28,37 +15,27 @@ _COLORS = {
 _RESET = "\033[0m"
 _print_lock = threading.Lock()
 
-# En Windows (cmd/PowerShell) se activan los códigos ANSI de color
 if os.name == "nt":
     os.system("")
-
 
 def color(text, col=None):
     if not col or col not in _COLORS:
         return str(text)
     return f"{_COLORS[col]}{text}{_RESET}"
 
-
 def log(tag, msg, col=None):
-    """Imprime '[HH:MM:SS] [TAG] mensaje' de forma segura entre hilos."""
     ts = datetime.now().strftime("%H:%M:%S")
     with _print_lock:
         print(f"[{ts}] [{tag}] {color(msg, col)}", flush=True)
 
-
 def env(name, default=None):
-    """Lee una variable de entorno (permite parametrizar sin tocar el código)."""
     v = os.environ.get(name)
     return v if v not in (None, "") else default
 
-
 def new_id(prefix="R"):
-    """Identificador corto y único para peticiones de riego."""
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
 
-
 def parse_hostport(s, default_port=None):
-    """'host:puerto' -> ('host', puerto)."""
     s = str(s).strip()
     if ":" in s:
         h, p = s.rsplit(":", 1)
@@ -67,32 +44,18 @@ def parse_hostport(s, default_port=None):
         raise ValueError(f"Se esperaba host:puerto y se recibió '{s}'")
     return s, int(default_port)
 
-
 def split_msg(msg):
-    """'CODIGO#campo1#campo2' -> ['CODIGO', 'campo1', 'campo2']"""
     return (msg or "").split("#")
 
-
-# ============================================================================ 2. sockets
-# Trama:  <STX> DATA <ETX> <LRC>     LRC = XOR byte a byte de DATA
-# El receptor responde con <ACK> si el LRC es correcto o <NACK> si no (el emisor reintenta).
+#  2. sockets
 STX, ETX, ACK, NACK = b"\x02", b"\x03", b"\x06", b"\x15"
 FORMAT = "utf-8"
 MAX_DATA = 4096
 MAX_RETRIES = 3
 
-
-class ConnectionClosed(Exception):
-    """El otro extremo ha cerrado la conexión."""
-
-
-class ProtocolError(Exception):
-    """Trama mal formada, LRC incorrecto repetidamente o respuesta inesperada."""
-
-
-class BusError(Exception):
-    """Error de Kafka."""
-
+class ConnectionClosed(Exception):"""El otro extremo ha cerrado la conexión."""
+class ProtocolError(Exception): """Trama mal formada, LRC incorrecto repetidamente o respuesta inesperada."""
+class BusError(Exception): """Error de Kafka."""
 
 def lrc(data: bytes) -> int:
     x = 0
@@ -100,24 +63,17 @@ def lrc(data: bytes) -> int:
         x ^= b
     return x
 
-
 def build_frame(text: str) -> bytes:
     data = text.encode(FORMAT)
     return STX + data + ETX + bytes([lrc(data)])
 
-
 class FramedConn:
-    """Conexión TCP que intercambia mensajes de texto empaquetados en tramas.
-    Los protocolos de la práctica son siempre 'pregunta -> respuesta', así que no
-    hay dos mensajes cruzándose a la vez por el mismo socket."""
-
     def __init__(self, sock, peer=None):
         self.sock = sock
         self.peer = peer
         self.buf = b""
         self.lock = threading.Lock()
 
-    # -- lectura de bytes con timeout
     def _read(self, n, timeout):
         self.sock.settimeout(timeout)
         while len(self.buf) < n:
@@ -146,7 +102,6 @@ class FramedConn:
 
     # -- API pública
     def send(self, text, timeout=5):
-        """Envía una trama y espera su ACK (reintenta si llega NACK)."""
         frame = build_frame(text)
         for _ in range(MAX_RETRIES):
             self.sock.sendall(frame)
@@ -155,7 +110,6 @@ class FramedConn:
         raise ProtocolError("el receptor rechazó la trama (NACK) repetidamente")
 
     def recv(self, timeout=None):
-        """Espera una trama, comprueba el LRC y responde ACK/NACK. Devuelve el texto."""
         for _ in range(MAX_RETRIES):
             data, rx_lrc = self._read_frame(timeout)
             if lrc(data) == rx_lrc:
@@ -176,14 +130,12 @@ class FramedConn:
         except OSError:
             pass
 
-
 def connect(host, port, timeout=5):
     s = socket.create_connection((host, int(port)), timeout=timeout)
     s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     return FramedConn(s, (host, port))
 
-
-# ============================================================================ 3. Kafka
+# 3. Kafka
 T_REQ = "wm.requests"        # FO / WS (riego manual) -> Central : peticiones de riego
 T_CMD = "wm.ws.commands"     # Central -> Engine : START, STOP, BLOCK, ACTIVATE, DENIED
 T_EVT = "wm.ws.events"       # Engine -> Central : START_ACK/NACK, TELEMETRY, END
@@ -235,12 +187,10 @@ class KafkaBus:
         return json.dumps(obj).encode(FORMAT)
 
     def send(self, topic, obj, key=None):
-        """Envío asíncrono (telemetría, latidos)."""
         self.producer.produce(topic, self._encode(obj), key=key)
         self.producer.poll(0)
 
     def send_sync(self, topic, obj, key=None, timeout=5):
-        """Envío confirmado por el broker. Devuelve True/False (nunca lanza excepción)."""
         res = {}
 
         def cb(err, _msg):
@@ -255,7 +205,6 @@ class KafkaBus:
         return "err" in res and res["err"] is None
 
     def tail_consumer(self, topics):
-        """Consumidor que empieza en el FINAL de los topics (solo mensajes nuevos)."""
         c = Consumer({"bootstrap.servers": self.bootstrap, "group.id": f"tail-{uuid.uuid4().hex}",
                       "enable.auto.commit": False, "auto.offset.reset": "latest"})
         parts = []
@@ -267,16 +216,12 @@ class KafkaBus:
         return c
 
     def group_consumer(self, topics, group):
-        """Consumidor con grupo: guarda por dónde va (offset). Si el proceso se cae,
-        al volver continúa donde lo dejó -> no se pierde ningún mensaje."""
-        c = Consumer({"bootstrap.servers": self.bootstrap, "group.id": group,
-                      "enable.auto.commit": True, "auto.offset.reset": "earliest"})
+        c = Consumer({"bootstrap.servers": self.bootstrap, "group.id": group, "enable.auto.commit": True, "auto.offset.reset": "earliest"})
         c.subscribe(topics)
         return c
 
 
 def poll_json(consumer, timeout=1.0):
-    """Devuelve (dict, raw) o (None, None) si no hay mensaje."""
     msg = consumer.poll(timeout)
     if msg is None or msg.error():
         return None, None
@@ -288,7 +233,6 @@ def poll_json(consumer, timeout=1.0):
 
 
 def connect_kafka(bootstrap, client_id, say):
-    """Reintenta hasta conectar con Kafka. 'say' es la función de log del módulo."""
     warned = False
     while True:
         try:
