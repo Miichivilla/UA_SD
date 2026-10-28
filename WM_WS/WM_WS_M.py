@@ -7,6 +7,7 @@ import time
 from wm_common import (ConnectionClosed, FramedConn, ProtocolError, color, connect, env, log,
                        parse_hostport, split_msg)
 
+
 class Monitor:
     def __init__(self, args):
         self.args = args
@@ -36,7 +37,7 @@ class Monitor:
             else:
                 self.say(f"*** AVERÍA: {reason}. Se notifica la FUGA a WM_Central ***", "red")
 
-    # enlace con Central
+    # ------------------------------------------------------------------ enlace con Central
     def central_loop(self):
         warned = False
         while True:
@@ -83,7 +84,7 @@ class Monitor:
                 if fc:
                     fc.close()
 
-    #  servidor para el Engine
+    # ------------------------------------------------------------------ servidor para el Engine
     def engine_server(self):
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -139,6 +140,7 @@ class Monitor:
                 with self.lock:
                     self.engine_conn = None
 
+
 def main():
     ap = argparse.ArgumentParser(description="WM_WS_M - Monitor de la Watering Station")
     ap.add_argument("--port", type=int, default=int(env("WM_MONITOR_PORT", 6000)), help="puerto para el engine")
@@ -157,6 +159,7 @@ def main():
             time.sleep(3600)
     except KeyboardInterrupt:
         print("\nMonitor detenido.")
+
 
 if __name__ == "__main__":
     main()

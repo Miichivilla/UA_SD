@@ -20,7 +20,9 @@ AVAILABLE, WATERING, LEAK, OUT, DISCONNECTED = "AVAILABLE", "WATERING", "LEAK", 
 LABEL = {AVAILABLE: "Available", WATERING: "Watering", LEAK: "Leak", OUT: "Out of Service",
          DISCONNECTED: "Disconnected"}
 # Fondo de color para el panel de terminal
-BG = {AVAILABLE: "\033[42;30m", WATERING: "\033[42;30;5m", LEAK: "\033[41;97m", OUT: "\033[48;5;208;30m", DISCONNECTED: "\033[100;97m"}
+BG = {AVAILABLE: "\033[42;30m", WATERING: "\033[42;30;5m", LEAK: "\033[41;97m",
+      OUT: "\033[48;5;208;30m", DISCONNECTED: "\033[100;97m"}
+
 
 # Carpeta con la interfaz web (archivos independientes del código Python)
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
@@ -32,23 +34,32 @@ WEB_FILES = {"/": ("panel.html", "text/html; charset=utf-8"),
 # Últimos eventos para el apartado "Eventos en tiempo real" del panel web
 EVENTS = deque(maxlen=200)
 
+
 def add_event(msg, col=None):
     EVENTS.append({"ts": time.strftime("%H:%M:%S"), "msg": msg, "col": col})
+
 
 def say(msg, col=None):
     log("CENTRAL", msg, col)
     add_event(msg, col)
-#  base de datos
+
+
+# ============================================================================ base de datos
 class DB:
     def __init__(self, path):
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.lock = threading.Lock()
         with self.lock:
             c = self.conn
-            c.execute("""CREATE TABLE IF NOT EXISTS ws( id TEXT PRIMARY KEY, location TEXT, blocked INTEGER DEFAULT 0)""")
-            c.execute("""CREATE TABLE IF NOT EXISTS operators(id TEXT PRIMARY KEY, created REAL)""")
-            c.execute("""CREATE TABLE IF NOT EXISTS sessions( -- riegos EN CURSO req_id TEXT PRIMARY KEY, ws TEXT, op TEXT, duration INTEGER, started REAL)""")
-            c.execute("""CREATE TABLE IF NOT EXISTS waterings(     -- histórico de riegos terminados req_id TEXT PRIMARY KEY, ws TEXT, op TEXT, volume REAL, duration INTEGER, reason TEXT, ended REAL)""")
+            c.execute("""CREATE TABLE IF NOT EXISTS ws(
+                            id TEXT PRIMARY KEY, location TEXT, blocked INTEGER DEFAULT 0)""")
+            c.execute("""CREATE TABLE IF NOT EXISTS operators(
+                            id TEXT PRIMARY KEY, created REAL)""")
+            c.execute("""CREATE TABLE IF NOT EXISTS sessions(      -- riegos EN CURSO
+                            req_id TEXT PRIMARY KEY, ws TEXT, op TEXT, duration INTEGER, started REAL)""")
+            c.execute("""CREATE TABLE IF NOT EXISTS waterings(     -- histórico de riegos terminados
+                            req_id TEXT PRIMARY KEY, ws TEXT, op TEXT, volume REAL,
+                            duration INTEGER, reason TEXT, ended REAL)""")
             c.commit()
 
     def q(self, sql, args=()):
@@ -56,7 +67,9 @@ class DB:
             cur = self.conn.execute(sql, args)
             self.conn.commit()
             return cur.fetchall()
-#  estado de una WS
+
+
+# ============================================================================ estado de una WS
 class WS:
     def __init__(self, ws_id, location, blocked=False):
         self.id = ws_id
@@ -80,7 +93,9 @@ class WS:
         if self.session:
             return WATERING
         return AVAILABLE
-#  Central
+
+
+# ============================================================================ Central
 class Central:
     def __init__(self, args):
         self.args = args
@@ -92,7 +107,7 @@ class Central:
         self.bus = None
         self.load_from_db()
 
-    # arranque
+    # ------------------------------------------------------------------ arranque
     def load_from_db(self):
         """Punto 1 de la mecánica: al arrancar se muestran las WS registradas como DESCONECTADAS."""
         for ws_id, loc, blocked in self.db.q("SELECT id, location, blocked FROM ws"):
@@ -108,7 +123,7 @@ class Central:
         say(f"Base de datos cargada: {len(self.ws)} WS registradas "
             f"({', '.join(self.ws) or 'ninguna'}). Todas DESCONECTADAS hasta que conecte su monitor.", "cyan")
 
-    #  Kafka
+    # ------------------------------------------------------------------ Kafka
     def kafka_thread(self):
         self.bus = connect_kafka(self.args.kafka, "wm-central", say)
         threading.Thread(target=self.consume, args=([T_REQ], "wm-central-req"), daemon=True).start()
@@ -150,7 +165,7 @@ class Central:
         elif t == "END":
             self.on_end(m)
 
-    # peticiones de riego
+    # ------------------------------------------------------------------ peticiones de riego
     def on_request(self, m):
         req_id, op, ws_id = m.get("req_id"), m.get("op", "?"), m.get("ws")
         src, dur = m.get("src", "FO"), int(m.get("duration", 30))
@@ -263,7 +278,7 @@ class Central:
                        f"El resumen final llegará cuando la WS se recupere.", ws=ws.id)
         self.cmd(ws.id, "STOP", req_id=s["req_id"], reason="FUGA" if "fuga" in why.lower() else "CENTRAL")
 
-    #  órdenes de la Central
+    # ------------------------------------------------------------------ órdenes de la Central (punto 11)
     def order(self, action, target, duration=30):
         with self.lock:
             targets = list(self.ws) if target.upper() == "ALL" else [target]
@@ -288,7 +303,7 @@ class Central:
                 self.cmd(ws_id, "ACTIVATE")
                 say(f"{ws_id} ACTIVADA", "green")
 
-    #  sockets con los monitores
+    # ------------------------------------------------------------------ sockets con los monitores
     def socket_server(self):
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -297,6 +312,7 @@ class Central:
         say(f"Servidor de sockets escuchando en el puerto {self.args.port}", "green")
         while True:
             conn, addr = srv.accept()
+            # servidor CONCURRENTE: un hilo por monitor
             threading.Thread(target=self.handle_monitor, args=(conn, addr), daemon=True).start()
 
     def handle_monitor(self, sock, addr):
@@ -315,7 +331,8 @@ class Central:
                             self.ws[rid] = WS(rid, loc)
                         else:
                             self.ws[rid].location = loc
-                        self.db.q("INSERT INTO ws(id, location) VALUES (?, ?) " "ON CONFLICT(id) DO UPDATE SET location=excluded.location", (rid, loc))
+                        self.db.q("INSERT INTO ws(id, location) VALUES (?, ?) "
+                                  "ON CONFLICT(id) DO UPDATE SET location=excluded.location", (rid, loc))
                     say(f"[REGISTRO] WS {rid} {'registrada' if new else 'actualizada'} en '{loc}' (desde {addr[0]})", "cyan")
                     fc.send(f"OK#WS {rid} {'registrada' if new else 'actualizada'}")
                 elif code == "AUTH" and len(m) >= 2:
@@ -382,7 +399,7 @@ class Central:
             say(f"{ws_id} DESCONECTADA: {why}", "gray")
             self.cut_session(ws, "WS desconectada de WM_Central")
 
-    #  hilos periódicos
+    # ------------------------------------------------------------------ hilos periódicos
     def watchdog(self):
         last_panel = None
         while True:
@@ -474,7 +491,7 @@ class Central:
             else:
                 say("Órdenes: start <ws|all> [seg] · block <ws|all> · activate <ws|all>", "yellow")
 
-    #  panel web
+    # ------------------------------------------------------------------ panel web
     def http_server(self):
         central = self
 
@@ -525,6 +542,7 @@ class Central:
 
         ThreadingHTTPServer(("0.0.0.0", self.args.http_port), Handler).serve_forever()
 
+
 def main():
     ap = argparse.ArgumentParser(description="WM_Central - Central de WaterManagement")
     ap.add_argument("--port", type=int, default=int(env("WM_PORT", 5050)), help="puerto de sockets para los WM_WS_M")
@@ -545,6 +563,7 @@ def main():
             time.sleep(3600)
     except KeyboardInterrupt:
         say("WM_Central detenida")
+
 
 if __name__ == "__main__":
     main()

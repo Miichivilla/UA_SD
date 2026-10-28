@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import argparse
 import json
 import os
@@ -6,7 +7,9 @@ import sys
 import threading
 import time
 
-from wm_common import (BusError, ConnectionClosed, KafkaBus, ProtocolError, T_CMD, T_EVT, T_REQ, color, connect, env, log, new_id, parse_hostport, poll_json, split_msg)
+# Las utilidades comunes (tramas de sockets, Kafka, colores...) están en wm_common.py
+from wm_common import (BusError, ConnectionClosed, KafkaBus, ProtocolError, T_CMD, T_EVT, T_REQ,
+                       color, connect, env, log, new_id, parse_hostport, poll_json, split_msg)
 
 try:                     # lectura de UNA tecla sin Enter (Linux/macOS/contenedor con -it)
     import termios
@@ -15,7 +18,9 @@ try:                     # lectura de UNA tecla sin Enter (Linux/macOS/contenedo
 except ImportError:      # Windows nativo: se usa el modo por líneas
     HAVE_TERMIOS = False
 
+
 def read_key():
+    """Espera una tecla (modo cbreak) y restaura el terminal. '' si stdin se cierra."""
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
@@ -69,6 +74,7 @@ class Outbox:
                 self.items.remove(ev)
                 self._save()
 
+
 class Engine:
     def __init__(self, args):
         self.args = args
@@ -91,7 +97,7 @@ class Engine:
         self.tag = "WS ENGINE"
         self._last_status = None
 
-    #  utilidades
+    # ------------------------------------------------------------------ utilidades
     def say(self, msg, col=None):
         log(self.tag, msg, col)
 
@@ -129,7 +135,7 @@ class Engine:
             return "la WS ya está regando"
         return None
 
-    #  Kafka
+    # ------------------------------------------------------------------ Kafka
     def kafka_init(self):
         """Conecta con Kafka y se posiciona al final de wm.ws.commands (reintenta hasta lograrlo)."""
         warned = False
@@ -207,7 +213,7 @@ class Engine:
                      f"ELECTROVÁLVULA ABIERTA", "green")
         self.show_status_change()
 
-    #  riego
+    # ------------------------------------------------------------------ riego
     def session_file(self):
         return os.path.join(self.args.data_dir, f"session_{self.ws_id}.json")
 
@@ -261,6 +267,8 @@ class Engine:
                     self.end_session("TIEMPO")
 
     def outbox_loop(self):
+        """Entrega los resúmenes finales a Central. Mientras la WS está en KO se retienen
+        (simula que el engine averiado no puede informar) y se envían al recuperarse."""
         while True:
             self.wake.wait(1.0)
             self.wake.clear()
@@ -274,7 +282,7 @@ class Engine:
                 else:
                     break
 
-    # enlace con el Monitor
+    # ------------------------------------------------------------------ enlace con el Monitor
     def link_loop(self):
         warned = None
         while True:
@@ -361,12 +369,14 @@ class Engine:
                 self.say(f"No se pudo recuperar el riego interrumpido: {e}", "red")
         self.wake.set()
 
-    #  teclado
+    # ------------------------------------------------------------------ teclado
     def menu(self):
         self.say("Menú:  [r] regar manualmente · [f] finalizar riego · [k] simular KO/recuperar · "
                  "[s] estado · [h] ayuda · [q] salir", "cyan")
 
     def keyboard_loop(self):
+        """Con terminal (docker run -it) basta PULSAR UNA TECLA (sin Enter); sin terminal
+        (tests, pipes) se leen líneas. El engine sigue funcionando aunque stdin se cierre."""
         self.menu()
         single_key = sys.stdin.isatty() and HAVE_TERMIOS
         while True:
@@ -442,6 +452,7 @@ class Engine:
                 self.wake.set()       # entrega los resúmenes retenidos
         self.show_status_change()
 
+
 def main():
     ap = argparse.ArgumentParser(description="WM_WS_E - Engine de la Watering Station")
     ap.add_argument("--kafka", default=env("KAFKA_BOOTSTRAP", "localhost:9092"), help="host:puerto del broker de Kafka")
@@ -459,6 +470,7 @@ def main():
         e.keyboard_loop()
     except KeyboardInterrupt:
         print("\nEngine detenido.")
+
 
 if __name__ == "__main__":
     main()
