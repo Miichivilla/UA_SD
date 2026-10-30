@@ -1,4 +1,4 @@
 # ID_WS,duracion_en_segundos
-WS1,10
+WS3,10
 WS2,8
 WS1,6
