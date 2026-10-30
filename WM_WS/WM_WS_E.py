@@ -5,12 +5,18 @@ import random
 import sys
 import threading
 import time
-import termios
-import tty
 
 # Las utilidades comunes (tramas de sockets, Kafka, colores...) están en wm_common.py
-from wm_common import (ConnectionClosed, KafkaBus, ProtocolError, T_CMD, T_EVT, T_REQ,
+from wm_common import (BusError, ConnectionClosed, KafkaBus, ProtocolError, T_CMD, T_EVT, T_REQ,
                        color, connect, env, log, new_id, parse_hostport, poll_json, split_msg)
+
+try:                     # lectura de UNA tecla sin Enter (Linux/macOS/contenedor con -it)
+    import termios
+    import tty
+    HAVE_TERMIOS = True
+except ImportError:      # Windows nativo: se usa el modo por líneas
+    HAVE_TERMIOS = False
+
 
 def read_key():
     """Espera una tecla (modo cbreak) y restaura el terminal. '' si stdin se cierra."""
@@ -371,11 +377,12 @@ class Engine:
         """Con terminal (docker run -it) basta PULSAR UNA TECLA (sin Enter); sin terminal
         (tests, pipes) se leen líneas. El engine sigue funcionando aunque stdin se cierre."""
         self.menu()
-        single_key = sys.stdin.isatty()
+        single_key = sys.stdin.isatty() and HAVE_TERMIOS
         while True:
             try:
                 if single_key:
-                    line = read_key()
+                    ch = read_key()
+                    line = "" if ch == "" else ch
                 else:
                     line = sys.stdin.readline()
             except Exception:
@@ -462,6 +469,7 @@ def main():
         e.keyboard_loop()
     except KeyboardInterrupt:
         print("\nEngine detenido.")
+
 
 if __name__ == "__main__":
     main()
