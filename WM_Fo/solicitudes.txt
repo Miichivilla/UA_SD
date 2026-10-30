@@ -1,5 +1,4 @@
 # ID_WS,duracion_en_segundos
-Station001,10
-Station002,8
-Station001,6
-Station003,5
+WS1,10
+WS2,8
+WS1,6
