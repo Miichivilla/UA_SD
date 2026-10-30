@@ -7,7 +7,7 @@ import time
 import uuid
 from datetime import datetime
 
-# ============================================================================ 1. utilidades
+#  1. utilidades
 _COLORS = {
     "red": "\033[91m", "green": "\033[92m", "yellow": "\033[93m", "blue": "\033[94m",
     "cyan": "\033[96m", "orange": "\033[38;5;208m", "gray": "\033[90m", "bold": "\033[1m",
@@ -15,16 +15,10 @@ _COLORS = {
 _RESET = "\033[0m"
 _print_lock = threading.Lock()
 
-# En Windows (cmd/PowerShell) se activan los códigos ANSI de color
-if os.name == "nt":
-    os.system("")
-
-
 def color(text, col=None):
     if not col or col not in _COLORS:
         return str(text)
     return f"{_COLORS[col]}{text}{_RESET}"
-
 
 def log(tag, msg, col=None):
     """Imprime '[HH:MM:SS] [TAG] mensaje' de forma segura entre hilos."""
@@ -32,17 +26,14 @@ def log(tag, msg, col=None):
     with _print_lock:
         print(f"[{ts}] [{tag}] {color(msg, col)}", flush=True)
 
-
 def env(name, default=None):
     """Lee una variable de entorno (permite parametrizar sin tocar el código)."""
     v = os.environ.get(name)
     return v if v not in (None, "") else default
 
-
 def new_id(prefix="R"):
     """Identificador corto y único para peticiones de riego."""
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
-
 
 def parse_hostport(s, default_port=None):
     """'host:puerto' -> ('host', puerto)."""
@@ -72,14 +63,11 @@ MAX_RETRIES = 3
 class ConnectionClosed(Exception):
     """El otro extremo ha cerrado la conexión."""
 
-
 class ProtocolError(Exception):
     """Trama mal formada, LRC incorrecto repetidamente o respuesta inesperada."""
 
-
 class BusError(Exception):
     """Error de Kafka."""
-
 
 def lrc(data: bytes) -> int:
     x = 0
@@ -87,11 +75,9 @@ def lrc(data: bytes) -> int:
         x ^= b
     return x
 
-
 def build_frame(text: str) -> bytes:
     data = text.encode(FORMAT)
     return STX + data + ETX + bytes([lrc(data)])
-
 
 class FramedConn:
     """Conexión TCP que intercambia mensajes de texto empaquetados en tramas.
@@ -169,7 +155,6 @@ def connect(host, port, timeout=5):
     s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     return FramedConn(s, (host, port))
 
-
 # ============================================================================ 3. Kafka
 T_REQ = "wm.requests"        # FO / WS (riego manual) -> Central : peticiones de riego
 T_CMD = "wm.ws.commands"     # Central -> Engine : START, STOP, BLOCK, ACTIVATE, DENIED
@@ -183,7 +168,6 @@ try:
     from confluent_kafka.admin import AdminClient, NewTopic
 except ImportError:            # permite importar el módulo sin Kafka (p. ej. el Monitor)
     Producer = None
-
 
 class KafkaBus:
     def __init__(self, bootstrap, client_id="wm"):
@@ -261,7 +245,6 @@ class KafkaBus:
         c.subscribe(topics)
         return c
 
-
 def poll_json(consumer, timeout=1.0):
     """Devuelve (dict, raw) o (None, None) si no hay mensaje."""
     msg = consumer.poll(timeout)
@@ -272,7 +255,6 @@ def poll_json(consumer, timeout=1.0):
         return json.loads(raw.decode(FORMAT)), raw
     except Exception:
         return None, raw
-
 
 def connect_kafka(bootstrap, client_id, say):
     """Reintenta hasta conectar con Kafka. 'say' es la función de log del módulo."""
