@@ -8,7 +8,6 @@ from wm_common import (T_FO, T_REQ, T_STATUS, color, connect_kafka, env, log, ne
 CENTRAL_TIMEOUT = 3.5      # s sin latido de Central -> "Imposible conectar con WM_Central"
 AUTH_TIMEOUT = 15          # s máximo esperando la autorización/denegación
 
-
 class FO:
     def __init__(self, args):
         self.args = args
@@ -161,16 +160,16 @@ class FO:
             elif op == "0":
                 return
 
-
 def main():
     ap = argparse.ArgumentParser(description="WM_FO - Aplicación del operario")
-    ap.add_argument("--kafka", default=env("KAFKA_BOOTSTRAP", "localhost:9092"), help="host:puerto del broker Kafka")
+    ap.add_argument("--kafka", default=env("KAFKA_BOOTSTRAP"), required=env("KAFKA_BOOTSTRAP") is None,
+                    help="host:puerto del broker Kafka (o variable KAFKA_BOOTSTRAP)")
     ap.add_argument("--id", default=env("FO_ID"), required=env("FO_ID") is None, help="ID del operario")
     ap.add_argument("--file", default=env("FO_FILE"), help="fichero de peticiones a procesar al arrancar")
     args = ap.parse_args()
     print(color("=" * 64, "cyan"))
     print(color(f"  WM_FO · Operario {args.id} · SD 26/27", "bold"))
-    print(color("=" * 64, "cyan"))
+    print(color("=" * 64, "cyan"), flush=True)
     fo = FO(args)
     fo.bus = connect_kafka(args.kafka, f"wm-fo-{args.id}", fo.say)
     threading.Thread(target=fo.status_loop, daemon=True).start()
@@ -182,7 +181,6 @@ def main():
     except KeyboardInterrupt:
         pass
     print("\nWM_FO detenido.")
-
 
 if __name__ == "__main__":
     main()

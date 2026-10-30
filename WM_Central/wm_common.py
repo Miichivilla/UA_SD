@@ -1,7 +1,6 @@
 import json
 import os
 import socket
-import sys
 import threading
 import time
 import uuid
@@ -14,10 +13,6 @@ _COLORS = {
 }
 _RESET = "\033[0m"
 _print_lock = threading.Lock()
-
-# En Windows (cmd/PowerShell) se activan los códigos ANSI de color
-if os.name == "nt":
-    os.system("")
 
 
 def color(text, col=None):

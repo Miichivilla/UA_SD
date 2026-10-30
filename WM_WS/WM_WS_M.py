@@ -4,9 +4,7 @@ import socket
 import threading
 import time
 
-from wm_common import (ConnectionClosed, FramedConn, ProtocolError, color, connect, env, log,
-                       parse_hostport, split_msg)
-
+from wm_common import (ConnectionClosed, FramedConn, ProtocolError, color, connect, env, log, parse_hostport, split_msg)
 
 class Monitor:
     def __init__(self, args):
@@ -140,17 +138,17 @@ class Monitor:
                 with self.lock:
                     self.engine_conn = None
 
-
 def main():
     ap = argparse.ArgumentParser(description="WM_WS_M - Monitor de la Watering Station")
     ap.add_argument("--port", type=int, default=int(env("WM_MONITOR_PORT", 6000)), help="puerto para el engine")
-    ap.add_argument("--central", default=env("WM_CENTRAL", "localhost:5050"), help="host:puerto de WM_Central")
+    ap.add_argument("--central", default=env("WM_CENTRAL"), required=env("WM_CENTRAL") is None,
+                    help="host:puerto de WM_Central (o variable WM_CENTRAL)")
     ap.add_argument("--id", default=env("WS_ID"), required=env("WS_ID") is None, help="ID de la WS")
     ap.add_argument("--location", default=env("WS_LOCATION"), help="ubicación (si se da, registra la WS)")
     args = ap.parse_args()
     print(color("=" * 64, "cyan"))
     print(color(f"  WM_WS_M · Monitor de la WS {args.id} · SD 26/27", "bold"))
-    print(color("=" * 64, "cyan"))
+    print(color("=" * 64, "cyan"), flush=True)
     m = Monitor(args)
     threading.Thread(target=m.engine_server, daemon=True).start()
     threading.Thread(target=m.central_loop, daemon=True).start()
@@ -159,7 +157,6 @@ def main():
             time.sleep(3600)
     except KeyboardInterrupt:
         print("\nMonitor detenido.")
-
 
 if __name__ == "__main__":
     main()

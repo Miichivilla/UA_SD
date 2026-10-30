@@ -3,23 +3,17 @@ import json
 import os
 import random
 import sys
+import termios
 import threading
 import time
+import tty
 
 # Las utilidades comunes (tramas de sockets, Kafka, colores...) están en wm_common.py
-from wm_common import (BusError, ConnectionClosed, KafkaBus, ProtocolError, T_CMD, T_EVT, T_REQ,
+from wm_common import (ConnectionClosed, KafkaBus, ProtocolError, T_CMD, T_EVT, T_REQ,
                        color, connect, env, log, new_id, parse_hostport, poll_json, split_msg)
 
-try:                     # lectura de UNA tecla sin Enter (Linux/macOS/contenedor con -it)
-    import termios
-    import tty
-    HAVE_TERMIOS = True
-except ImportError:      # Windows nativo: se usa el modo por líneas
-    HAVE_TERMIOS = False
-
-
 def read_key():
-    """Espera una tecla (modo cbreak) y restaura el terminal. '' si stdin se cierra."""
+    """Espera una tecla (sin Enter) y restaura el terminal. '' si stdin se cierra."""
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
@@ -28,11 +22,9 @@ def read_key():
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
-
 REASON_TXT = {"TIEMPO": "tiempo cumplido", "MANUAL_WS": "finalizado desde la WS", "FUGA": "fuga/avería",
               "BLOQUEO": "bloqueada por Central", "MONITOR": "monitor caído", "CENTRAL": "parada por Central",
               "INTERRUMPIDO": "engine interrumpido"}
-
 
 class Outbox:
     """Cola persistente de eventos críticos (resúmenes finales) pendientes de entregar a Kafka."""
@@ -72,7 +64,6 @@ class Outbox:
             if ev in self.items:
                 self.items.remove(ev)
                 self._save()
-
 
 class Engine:
     def __init__(self, args):
@@ -374,52 +365,41 @@ class Engine:
                  "[s] estado · [h] ayuda · [q] salir", "cyan")
 
     def keyboard_loop(self):
-        """Con terminal (docker run -it) basta PULSAR UNA TECLA (sin Enter); sin terminal
-        (tests, pipes) se leen líneas. El engine sigue funcionando aunque stdin se cierre."""
+        """Menú de la WS: basta PULSAR UNA TECLA (sin Enter). Requiere 'docker run -it';
+        sin terminal el engine sigue funcionando, pero sin menú."""
+        if not sys.stdin or not sys.stdin.isatty():
+            while True:
+                time.sleep(3600)
         self.menu()
-        single_key = sys.stdin.isatty() and HAVE_TERMIOS
         while True:
             try:
-                if single_key:
-                    ch = read_key()
-                    line = "" if ch == "" else ch
-                else:
-                    line = sys.stdin.readline()
+                c = read_key().lower()
             except Exception:
                 return
-            if line == "":             # stdin cerrado (docker sin -it): el engine sigue funcionando
+            if c == "":                # stdin cerrado: el engine sigue funcionando
                 while True:
                     time.sleep(3600)
-            parts = line.strip().lower().split()
-            if not parts:
-                continue
-            c = parts[0]
-            if c in ("r", "1"):
-                dur = 30
-                if len(parts) > 1 and parts[1].isdigit():
-                    dur = int(parts[1])
-                elif single_key:
-                    try:
-                        d = input("  Duración del riego en segundos [30]: ").strip()
-                        dur = int(d) if d.isdigit() else 30
-                    except EOFError:
-                        pass
-                self.manual_start(dur)
-            elif c in ("f", "2"):
+            if c == "r":
+                try:
+                    d = input("  Duración del riego en segundos [30]: ").strip()
+                except EOFError:
+                    d = ""
+                self.manual_start(int(d) if d.isdigit() else 30)
+            elif c == "f":
                 if self.session:
                     self.end_session("MANUAL_WS")
                 else:
                     self.say("No hay ningún riego en curso", "yellow")
-            elif c in ("k", "3"):
+            elif c == "k":
                 self.toggle_ko()
-            elif c in ("s", "4"):
+            elif c == "s":
                 t, col = self.status()
                 self.say(f"ESTADO: {t}  (Central: {'ok' if self.central_up else 'caída'}, "
                          f"monitor: {'ok' if self.monitor_up else 'caído'})", col)
-            elif c in ("q", "0"):
+            elif c == "q":
                 self.say("Engine detenido.")
                 os._exit(0)
-            else:
+            elif c.strip():
                 self.menu()
 
     def manual_start(self, duration):
@@ -451,16 +431,16 @@ class Engine:
                 self.wake.set()       # entrega los resúmenes retenidos
         self.show_status_change()
 
-
 def main():
     ap = argparse.ArgumentParser(description="WM_WS_E - Engine de la Watering Station")
-    ap.add_argument("--kafka", default=env("KAFKA_BOOTSTRAP", "localhost:9092"), help="host:puerto del broker de Kafka")
+    ap.add_argument("--kafka", default=env("KAFKA_BOOTSTRAP"), required=env("KAFKA_BOOTSTRAP") is None,
+                    help="host:puerto del broker de Kafka (o variable KAFKA_BOOTSTRAP)")
     ap.add_argument("--monitor", default=env("WM_MONITOR", "localhost:6000"), help="host:puerto del WM_WS_M")
     ap.add_argument("--data-dir", default=env("WM_DATA_DIR", "./data"), help="carpeta del estado persistente")
     args = ap.parse_args()
     print(color("=" * 64, "cyan"))
     print(color("  WM_WS_E · Engine de la Watering Station · SD 26/27", "bold"))
-    print(color("=" * 64, "cyan"))
+    print(color("=" * 64, "cyan"), flush=True)
     e = Engine(args)
     e.kafka_init()
     for t in (e.cmd_loop, e.tick_loop, e.outbox_loop, e.link_loop):
@@ -469,7 +449,6 @@ def main():
         e.keyboard_loop()
     except KeyboardInterrupt:
         print("\nEngine detenido.")
-
 
 if __name__ == "__main__":
     main()
