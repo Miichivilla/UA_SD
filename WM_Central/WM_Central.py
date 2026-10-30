@@ -3,6 +3,7 @@ import json
 import os
 import socket
 import sqlite3
+import sys
 import threading
 import time
 from collections import deque
@@ -473,7 +474,23 @@ class Central:
             lines.append(f"{BG[r['state']]}{txt:<92}\033[0m")
         if not rows:
             lines.append("  (no hay WS registradas)")
+        lines.append(color("  Órdenes (escribe + Enter): start <ws|all> [seg] · block <ws|all> · activate <ws|all>"
+                           f"   ·   Panel web: http://localhost:{self.args.http_port}", "gray"))
         return "\n".join(lines)
+
+    def console(self):
+        """Órdenes por teclado (solo si hay terminal: en local con docker attach / python directo)."""
+        if not sys.stdin or not sys.stdin.isatty():
+            return
+        for line in sys.stdin:
+            p = line.strip().split()
+            if not p:
+                continue
+            if p[0] in ("start", "block", "activate") and len(p) >= 2:
+                self.order(p[0], p[1], p[2] if len(p) > 2 and p[2].isdigit() else 30)
+            else:
+                say("Órdenes: start <ws|all> [seg] · block <ws|all> · activate <ws|all>", "yellow")
+
     # ------------------------------------------------------------------ panel web
     def http_server(self):
         central = self
@@ -538,9 +555,9 @@ def main():
     print(color("  WM_Central · WaterManagement · SD 26/27", "bold"))
     print(color("=" * 64, "cyan"))
     c = Central(args)
-    for t in (c.http_server, c.socket_server, c.kafka_thread, c.watchdog):
+    for t in (c.http_server, c.socket_server, c.kafka_thread, c.watchdog, c.console):
         threading.Thread(target=t, daemon=True).start()
-    say(f"Panel web escuchando en el puerto {args.http_port}", "green")
+    say(f"Panel web en http://localhost:{args.http_port}", "green")
     try:
         while True:
             time.sleep(3600)
