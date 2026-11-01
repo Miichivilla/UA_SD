@@ -11,26 +11,30 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from wm_common import (T_CMD, T_EVT, T_FO, T_REQ, T_STATUS, ConnectionClosed, FramedConn, ProtocolError,
                        color, connect_kafka, env, log, new_id, poll_json, split_msg)
 
-HEARTBEAT_TIMEOUT = 3.5     # s sin latido del monitor -> DESCONECTADA
-START_TIMEOUT = 6           # s esperando START_ACK del engine
-MAX_REQ_AGE = 20            # s: peticiones más antiguas (p.ej. enviadas con la Central caída) se rechazan
+MAX_CONEXIONES = 50
+HEARTBEAT_TIMEOUT = 3.5
+START_TIMEOUT = 6
+MAX_REQ_AGE = 20
+
 
 AVAILABLE, WATERING, LEAK, OUT, DISCONNECTED = "AVAILABLE", "WATERING", "LEAK", "OUT_OF_SERVICE", "DISCONNECTED"
+
+
 LABEL = {AVAILABLE: "Available", WATERING: "Watering", LEAK: "Leak", OUT: "Out of Service",
          DISCONNECTED: "Disconnected"}
-# Fondo de color para el panel de terminal
+
+
 BG = {AVAILABLE: "\033[42;30m", WATERING: "\033[42;30;5m", LEAK: "\033[41;97m",
       OUT: "\033[48;5;208;30m", DISCONNECTED: "\033[100;97m"}
 
 
-# Carpeta con la interfaz web (archivos independientes del código Python)
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 WEB_FILES = {"/": ("panel.html", "text/html; charset=utf-8"),
              "/panel.html": ("panel.html", "text/html; charset=utf-8"),
              "/panel.css": ("panel.css", "text/css; charset=utf-8"),
              "/panel.js": ("panel.js", "application/javascript; charset=utf-8")}
 
-# Últimos eventos para el apartado "Eventos en tiempo real" del panel web
+
 EVENTS = deque(maxlen=200)
 
 
@@ -43,270 +47,310 @@ def say(msg, col=None):
     add_event(msg, col)
 
 
-# ============================================================================ base de datos
-class DB:
-    def __init__(self, path):
-        self.conn = sqlite3.connect(path, check_same_thread=False)
+class Database:
+    def __init__(self, db_path):
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
+
         self.lock = threading.Lock()
         with self.lock:
-            c = self.conn
-            c.execute("""CREATE TABLE IF NOT EXISTS ws(
-                            id TEXT PRIMARY KEY, location TEXT, blocked INTEGER DEFAULT 0)""")
-            c.execute("""CREATE TABLE IF NOT EXISTS operators(
-                            id TEXT PRIMARY KEY, created REAL)""")
-            c.execute("""CREATE TABLE IF NOT EXISTS sessions(      -- riegos EN CURSO
-                            req_id TEXT PRIMARY KEY, ws TEXT, op TEXT, duration INTEGER, started REAL)""")
-            c.execute("""CREATE TABLE IF NOT EXISTS waterings(     -- histórico de riegos terminados
-                            req_id TEXT PRIMARY KEY, ws TEXT, op TEXT, volume REAL,
-                            duration INTEGER, reason TEXT, ended REAL)""")
-            c.commit()
-
-    def q(self, sql, args=()):
-        with self.lock:
-            cur = self.conn.execute(sql, args)
+            self.conn.execute("""CREATE TABLE IF NOT EXISTS
+                                WM_Stations (id TEXT PRIMARY KEY, location TEXT, blocked INTEGER DEFAULT 0)""")
+            self.conn.execute("""CREATE TABLE IF NOT EXISTS
+                                Operators (id TEXT PRIMARY KEY, created REAL)""")
+            self.conn.execute("""CREATE TABLE IF NOT EXISTS
+                                Sessions (req_id TEXT PRIMARY KEY, ws TEXT, operator_id TEXT,
+                                          duration INTEGER, started REAL)""")
+            self.conn.execute("""CREATE TABLE IF NOT EXISTS
+                                Waterings (req_id TEXT PRIMARY KEY, ws TEXT, operator_id TEXT, volume REAL,
+                                           duration INTEGER, reason TEXT, ended REAL)""")
             self.conn.commit()
-            return cur.fetchall()
+
+    def query(self, sql, params=()):
+        with self.lock:
+            cursor = self.conn.execute(sql, params)
+            self.conn.commit()
+            return cursor.fetchall()
 
 
-# ============================================================================ estado de una WS
-class WS:
+class WSState:
     def __init__(self, ws_id, location, blocked=False):
         self.id = ws_id
         self.location = location
         self.blocked = blocked
         self.connected = False
         self.last_seen = 0.0
-        self.conn_token = None        # identifica la conexión del monitor activa
-        self.health = "OK"            # lo que reporta el monitor: OK / KO
-        self.health_reason = ""
-        self.session = None           # riego en curso: dict(req_id, op, duration, flow, volume, elapsed)
-        self.total = 0.0              # litros totales suministrados (histórico)
+        self.connection_token = None
+        self.health = "OK"
+        self.health_msg = ""
+        self.current_session = None
+        self.total_watered = 0.0
 
-    def state(self):
+    def status(self):
         if not self.connected:
             return DISCONNECTED
         if self.health == "KO":
             return LEAK
         if self.blocked:
             return OUT
-        if self.session:
+        if self.current_session:
             return WATERING
         return AVAILABLE
 
 
-# ============================================================================ Central
 class Central:
     def __init__(self, args):
         self.args = args
-        self.db = DB(args.db)
+        self.db = Database(args.db)
         self.lock = threading.RLock()
-        self.ws = {}
-        self.pending = {}         # req_id -> petición esperando START_ACK
-        self.interrupted = {}     # req_id -> sesión cortada por fuga/desconexión (falta el END)
+        self.ws_states = {}
+        self.pending_requests = {}
+        self.interrupted_sessions = {}
         self.bus = None
-        self.load_from_db()
+        self.load_ws_states_from_db()
 
-    # ------------------------------------------------------------------ arranque
-    def load_from_db(self):
-        """Punto 1 de la mecánica: al arrancar se muestran las WS registradas como DESCONECTADAS."""
-        for ws_id, loc, blocked in self.db.q("SELECT id, location, blocked FROM ws"):
-            self.ws[ws_id] = WS(ws_id, loc, bool(blocked))
-        for ws_id, total in self.db.q("SELECT ws, SUM(volume) FROM waterings GROUP BY ws"):
-            if ws_id in self.ws:
-                self.ws[ws_id].total = total or 0.0
-        # riegos que estaban en curso cuando la Central se paró: siguen en la WS
-        for req_id, ws_id, op, dur, _ in self.db.q("SELECT * FROM sessions"):
-            if ws_id in self.ws:
-                self.ws[ws_id].session = {"req_id": req_id, "op": op, "duration": dur,
-                                          "flow": 0.0, "volume": 0.0, "elapsed": 0}
-        say(f"Base de datos cargada: {len(self.ws)} WS registradas "
-            f"({', '.join(self.ws) or 'ninguna'}). Todas DESCONECTADAS hasta que conecte su monitor.", "cyan")
 
-    # ------------------------------------------------------------------ Kafka
+    def load_ws_states_from_db(self):
+        for ws_id, location, blocked in self.db.query("SELECT id, location, blocked FROM WM_Stations"):
+            self.ws_states[ws_id] = WSState(ws_id, location, bool(blocked))
+
+        for ws_id, total in self.db.query("SELECT ws, SUM(volume) FROM Waterings GROUP BY ws"):
+            if ws_id in self.ws_states:
+                self.ws_states[ws_id].total_watered = total or 0.0
+
+
+        for req_id, ws_id, operator_id, duration, _ in self.db.query("SELECT * FROM Sessions"):
+            if ws_id in self.ws_states:
+                self.ws_states[ws_id].current_session = {"req_id": req_id, "operator_id": operator_id,
+                                                         "duration": duration, "flow": 0.0,
+                                                         "volume": 0.0, "elapsed": 0}
+
+        say(f"Base de datos cargada: {len(self.ws_states)} estaciones registradas "
+            f"({', '.join(self.ws_states) or 'ninguna'}). Todas DESCONECTADAS hasta que conecte su monitor.",
+            "cyan")
+
+
     def kafka_thread(self):
         self.bus = connect_kafka(self.args.kafka, "wm-central", say)
         threading.Thread(target=self.consume, args=([T_REQ], "wm-central-req"), daemon=True).start()
         threading.Thread(target=self.consume, args=([T_EVT], "wm-central-evt"), daemon=True).start()
 
     def consume(self, topics, group):
-        # Consumidor con grupo: si la Central cae, al volver procesa lo que llegó mientras tanto.
-        c = self.bus.group_consumer(topics, group)
+
+        consumer = self.bus.group_consumer(topics, group)
         while True:
             try:
-                m, _ = poll_json(c, 1.0)
-                if m:
-                    self.on_kafka(m)
+                msg, _ = poll_json(consumer, 1.0)
+                if msg:
+                    self.on_kafka(msg)
             except Exception as e:
                 say(f"Error procesando mensaje de Kafka: {e}", "red")
 
-    def cmd(self, ws_id, t, **kw):
-        """Orden a un Engine por Kafka."""
-        msg = {"t": t, "ws": ws_id, **kw}
+    def cmd(self, ws_id, cmd_type, **kwargs):
+        msg = {"t": cmd_type, "ws": ws_id, **kwargs}
         if not (self.bus and self.bus.send_sync(T_CMD, msg, key=ws_id)):
-            say(f"No se pudo enviar la orden {t} a {ws_id} (Kafka no disponible)", "red")
+            say(f"No se pudo enviar la orden {cmd_type} a {ws_id} (Kafka no disponible)", "red")
             return False
         return True
 
-    def notify_fo(self, op, req_id, t, text, **kw):
-        """Mensaje para el operario 'op' (solo lo muestra ese operario)."""
-        if not op or op == "CENTRAL" or op.startswith("WS:") or not self.bus:
+    def notify_fo(self, operator_id, req_id, msg_type, text, **kwargs):
+        if not operator_id or operator_id == "CENTRAL" or operator_id.startswith("WS:") or not self.bus:
             return
-        self.bus.send_sync(T_FO, {"t": t, "op": op, "req_id": req_id, "msg": text, **kw}, key=op)
+        self.bus.send_sync(T_FO, {"t": msg_type, "op": operator_id, "req_id": req_id, "msg": text, **kwargs},
+                           key=operator_id)
 
-    def on_kafka(self, m):
-        t = m.get("t")
-        if t == "REQ":
-            self.on_request(m)
-        elif t in ("START_ACK", "START_NACK"):
-            self.on_start_reply(m)
-        elif t == "TELEMETRY":
-            self.on_telemetry(m)
-        elif t == "END":
-            self.on_end(m)
+    def on_kafka(self, msg):
+        msg_type = msg.get("t")
+        if msg_type == "REQ":
+            self.on_request(msg)
+        elif msg_type in ("START_ACK", "START_NACK"):
+            self.on_start_reply(msg)
+        elif msg_type == "TELEMETRY":
+            self.on_telemetry(msg)
+        elif msg_type == "END":
+            self.on_end(msg)
 
-    # ------------------------------------------------------------------ peticiones de riego
-    def on_request(self, m):
-        req_id, op, ws_id = m.get("req_id"), m.get("op", "?"), m.get("ws")
-        src, dur = m.get("src", "FO"), int(m.get("duration", 30))
-        if src == "FO":
-            if not self.db.q("SELECT 1 FROM operators WHERE id=?", (op,)):
-                self.db.q("INSERT INTO operators VALUES (?, ?)", (op, time.time()))
-                say(f"Nuevo operario dado de alta: {op}", "cyan")
-        if time.time() - float(m.get("ts", time.time())) > MAX_REQ_AGE:
-            self.deny(req_id, op, ws_id, src, "petición caducada (se envió con WM_Central caída)")
+
+    def on_request(self, msg):
+        req_id = msg.get("req_id")
+        operator_id = msg.get("op", "?")
+        ws_id = msg.get("ws")
+        source = msg.get("src", "FO")
+        duration = int(msg.get("duration", 30))
+
+        if source == "FO":
+            if not self.db.query("SELECT 1 FROM Operators WHERE id=?", (operator_id,)):
+                self.db.query("INSERT INTO Operators VALUES (?, ?)", (operator_id, time.time()))
+                say(f"Nuevo operario dado de alta: {operator_id}", "cyan")
+
+        if time.time() - float(msg.get("ts", time.time())) > MAX_REQ_AGE:
+            self.deny(req_id, operator_id, ws_id, source, "petición caducada (se envió con WM_Central caída)")
             return
-        say(f"Petición {req_id} de {op} para {ws_id} ({dur} s). Comprobando disponibilidad...", "cyan")
-        self.start_watering(ws_id, op, dur, req_id, src)
 
-    def start_watering(self, ws_id, op, dur, req_id=None, src="CENTRAL"):
+        say(f"Petición {req_id} de {operator_id} para {ws_id} ({duration} s). Comprobando disponibilidad...",
+            "cyan")
+        self.start_watering(ws_id, operator_id, duration, req_id, source)
+
+    def start_watering(self, ws_id, operator_id, duration, req_id=None, source="CENTRAL"):
         req_id = req_id or new_id("C")
         with self.lock:
-            ws = self.ws.get(ws_id)
-            if ws is None:
-                return self.deny(req_id, op, ws_id, src, "WS no registrada")
-            st = ws.state()
-            if st != AVAILABLE:
-                return self.deny(req_id, op, ws_id, src, f"WS no disponible (estado {LABEL[st]})")
-            if any(p["ws"] == ws_id for p in self.pending.values()):
-                return self.deny(req_id, op, ws_id, src, "la WS tiene otra activación pendiente")
-            if not self.bus:
-                return self.deny(req_id, op, ws_id, src, "WM_Central sin conexión con Kafka")
-            self.pending[req_id] = {"ws": ws_id, "op": op, "duration": dur, "src": src, "t0": time.time()}
-        self.notify_fo(op, req_id, "INFO", f"WM_Central: {ws_id} disponible. Solicitando autorización a la WS...",
-                       ws=ws_id)
-        say(f"{ws_id} disponible: enviando START {req_id} a la WS", "cyan")
-        if not self.cmd(ws_id, "START", req_id=req_id, op=op, duration=dur):
-            with self.lock:
-                self.pending.pop(req_id, None)
-            self.deny(req_id, op, ws_id, src, "no se pudo contactar con la WS")
+            ws_state = self.ws_states.get(ws_id)
+            if ws_state is None:
+                return self.deny(req_id, operator_id, ws_id, source, "WS no registrada")
 
-    def deny(self, req_id, op, ws_id, src, reason):
-        say(f"Riego {req_id} de {op} en {ws_id} DENEGADO: {reason}", "red")
-        self.notify_fo(op, req_id, "DENIED", f"Riego DENEGADO: {reason}", ws=ws_id)
-        if src == "WS" and ws_id:
+            status = ws_state.status()
+            if status != AVAILABLE:
+                return self.deny(req_id, operator_id, ws_id, source,
+                                 f"WS no disponible (estado {LABEL[status]})")
+            if any(p["ws"] == ws_id for p in self.pending_requests.values()):
+                return self.deny(req_id, operator_id, ws_id, source, "la WS tiene otra activación pendiente")
+            if not self.bus:
+                return self.deny(req_id, operator_id, ws_id, source, "WM_Central sin conexión con Kafka")
+            self.pending_requests[req_id] = {"ws": ws_id, "operator_id": operator_id, "duration": duration,
+                                             "source": source, "t0": time.time()}
+
+        self.notify_fo(operator_id, req_id, "INFO",
+                       f"WM_Central: {ws_id} disponible. Solicitando autorización a la WS...", ws=ws_id)
+        say(f"{ws_id} disponible: enviando START {req_id} a la WS", "cyan")
+        if not self.cmd(ws_id, "START", req_id=req_id, op=operator_id, duration=duration):
+            with self.lock:
+                self.pending_requests.pop(req_id, None)
+            self.deny(req_id, operator_id, ws_id, source, "no se pudo contactar con la WS")
+
+    def deny(self, req_id, operator_id, ws_id, source, reason):
+        say(f"Riego {req_id} de {operator_id} en {ws_id} DENEGADO: {reason}", "red")
+        self.notify_fo(operator_id, req_id, "DENIED", f"Riego DENEGADO: {reason}", ws=ws_id)
+        if source == "WS" and ws_id:
             self.cmd(ws_id, "DENIED", req_id=req_id, reason=reason)
 
-    def on_start_reply(self, m):
-        req_id, ws_id = m.get("req_id"), m.get("ws")
+    def on_start_reply(self, msg):
+        req_id = msg.get("req_id")
+        ws_id = msg.get("ws")
+
         with self.lock:
-            p = self.pending.pop(req_id, None)
-            if p is None:
+            pending = self.pending_requests.pop(req_id, None)
+            if pending is None:
                 return
-            if m["t"] == "START_ACK":
-                self.ws[ws_id].session = {"req_id": req_id, "op": p["op"], "duration": p["duration"],
-                                          "flow": 0.0, "volume": 0.0, "elapsed": 0}
-                self.db.q("INSERT OR REPLACE INTO sessions VALUES (?,?,?,?,?)",
-                          (req_id, ws_id, p["op"], p["duration"], time.time()))
-        if m["t"] == "START_NACK":
-            self.deny(req_id, p["op"], ws_id, p["src"], f"la WS rechazó el inicio: {m.get('reason')}")
-            return
-        say(f"Riego {req_id} AUTORIZADO en {ws_id} para {p['op']} ({p['duration']} s): electroválvula abierta",
-            "green")
-        self.notify_fo(p["op"], req_id, "AUTHORIZED",
-                       f"Riego AUTORIZADO en {ws_id} ({p['duration']} s). Electroválvula abierta.", ws=ws_id)
+            if msg["t"] == "START_ACK":
+                self.ws_states[ws_id].current_session = {"req_id": req_id,
+                                                         "operator_id": pending["operator_id"],
+                                                         "duration": pending["duration"],
+                                                         "flow": 0.0, "volume": 0.0, "elapsed": 0}
+                self.db.query("INSERT OR REPLACE INTO Sessions VALUES (?, ?, ?, ?, ?)",
+                              (req_id, ws_id, pending["operator_id"], pending["duration"], time.time()))
 
-    def on_telemetry(self, m):
-        ws_id, req_id = m.get("ws"), m.get("req_id")
+        if msg["t"] == "START_NACK":
+            self.deny(req_id, pending["operator_id"], ws_id, pending["source"],
+                      f"la WS rechazó el inicio: {msg.get('reason')}")
+            return
+
+        say(f"Riego {req_id} AUTORIZADO en {ws_id} para {pending['operator_id']} "
+            f"({pending['duration']} s): electroválvula abierta", "green")
+        self.notify_fo(pending["operator_id"], req_id, "AUTHORIZED",
+                       f"Riego AUTORIZADO en {ws_id} ({pending['duration']} s). Electroválvula abierta.",
+                       ws=ws_id)
+
+    def on_telemetry(self, msg):
+        ws_id = msg.get("ws")
+        req_id = msg.get("req_id")
+
         with self.lock:
-            ws = self.ws.get(ws_id)
-            if not ws or req_id in self.interrupted:
+            ws_state = self.ws_states.get(ws_id)
+            if not ws_state or req_id in self.interrupted_sessions:
                 return
-            if ws.session is None or ws.session["req_id"] != req_id:
-                ws.session = {"req_id": req_id, "op": "?", "duration": 0, "flow": 0.0, "volume": 0.0, "elapsed": 0}
-            s = ws.session
-            s.update(flow=m.get("flow", 0.0), volume=m.get("volume", 0.0), elapsed=m.get("elapsed", 0))
-            op = s["op"]
-        # solo al panel web (en la terminal ya se ve en la tabla, que se repinta cada segundo)
-        add_event(f"[{op}] Regando en {ws_id}: {s['flow']:.1f} L/min | {s['volume']:.2f} L acumulados | "
-                  f"{s['elapsed']}/{s['duration']} s")
-        self.notify_fo(op, req_id, "TELEMETRY", "", ws=ws_id, flow=s["flow"], volume=s["volume"],
-                       elapsed=s["elapsed"], duration=s["duration"])
+            if ws_state.current_session is None or ws_state.current_session["req_id"] != req_id:
+                ws_state.current_session = {"req_id": req_id, "operator_id": "?", "duration": 0,
+                                            "flow": 0.0, "volume": 0.0, "elapsed": 0}
+            session = ws_state.current_session
+            session.update(flow=msg.get("flow", 0.0), volume=msg.get("volume", 0.0),
+                           elapsed=msg.get("elapsed", 0))
+            operator_id = session["operator_id"]
+            flow, volume = session["flow"], session["volume"]
+            elapsed, duration = session["elapsed"], session["duration"]
 
-    def on_end(self, m):
-        ws_id, req_id = m.get("ws"), m.get("req_id")
-        vol, dur, reason, op = float(m.get("volume", 0)), int(m.get("duration", 0)), m.get("reason", "?"), m.get("op")
+
+        add_event(f"[{operator_id}] Regando en {ws_id}: {flow:.1f} L/min | {volume:.2f} L acumulados | "
+                  f"{elapsed}/{duration} s")
+        self.notify_fo(operator_id, req_id, "TELEMETRY", "", ws=ws_id, flow=flow, volume=volume,
+                       elapsed=elapsed, duration=duration)
+
+    def on_end(self, msg):
+        ws_id = msg.get("ws")
+        req_id = msg.get("req_id")
+        volume = float(msg.get("volume", 0.0))
+        duration = int(msg.get("duration", 0))
+        reason = msg.get("reason", "?")
+        operator_id = msg.get("op")
+
         with self.lock:
-            ws = self.ws.get(ws_id)
-            if ws and ws.session and ws.session["req_id"] == req_id:
-                op = ws.session["op"] if ws.session["op"] != "?" else op
-                ws.session = None
-            self.interrupted.pop(req_id, None)
-            if self.db.q("SELECT 1 FROM waterings WHERE req_id=?", (req_id,)):
-                return                                             # duplicado: ya contabilizado
-            self.db.q("DELETE FROM sessions WHERE req_id=?", (req_id,))
-            self.db.q("INSERT INTO waterings VALUES (?,?,?,?,?,?,?)", (req_id, ws_id, op, vol, dur, reason, time.time()))
-            if ws:
-                ws.total += vol
-        say(f"RIEGO FINALIZADO {req_id} en {ws_id} ({reason}): {vol:.2f} L en {dur} s. Operario {op}", "cyan")
-        self.notify_fo(op, req_id, "END", f"Resumen final: {vol:.2f} L en {dur} s (motivo: {reason})",
-                       ws=ws_id, volume=vol, duration=dur, reason=reason)
+            ws_state = self.ws_states.get(ws_id)
+            if ws_state and ws_state.current_session and ws_state.current_session["req_id"] == req_id:
+                if ws_state.current_session["operator_id"] != "?":
+                    operator_id = ws_state.current_session["operator_id"]
+                ws_state.current_session = None
+            self.interrupted_sessions.pop(req_id, None)
 
-    def cut_session(self, ws, why):
-        """Fuga o desconexión durante un riego: avisa al FO; el END llegará cuando la WS se recupere."""
-        s = ws.session
-        if not s:
+            if self.db.query("SELECT 1 FROM Waterings WHERE req_id=?", (req_id,)):
+                return
+            self.db.query("DELETE FROM Sessions WHERE req_id=?", (req_id,))
+            self.db.query("INSERT INTO Waterings VALUES (?, ?, ?, ?, ?, ?, ?)",
+                          (req_id, ws_id, operator_id, volume, duration, reason, time.time()))
+            if ws_state:
+                ws_state.total_watered += volume
+
+        say(f"RIEGO FINALIZADO {req_id} en {ws_id} ({reason}): {volume:.2f} L en {duration} s. "
+            f"Operario {operator_id}", "cyan")
+        self.notify_fo(operator_id, req_id, "END",
+                       f"Resumen final: {volume:.2f} L en {duration} s (motivo: {reason})",
+                       ws=ws_id, volume=volume, duration=duration, reason=reason)
+
+    def cut_session(self, ws_state, reason):
+        session = ws_state.current_session
+        if not session:
             return
-        ws.session = None
-        self.interrupted[s["req_id"]] = dict(s, ws=ws.id)
-        say(f"Riego {s['req_id']} en {ws.id} INTERRUMPIDO: {why}", "red")
-        self.notify_fo(s["op"], s["req_id"], "INCIDENT",
-                       f"Riego interrumpido en {ws.id}: {why}. Llevaba {s['volume']:.2f} L. "
-                       f"El resumen final llegará cuando la WS se recupere.", ws=ws.id)
-        self.cmd(ws.id, "STOP", req_id=s["req_id"], reason="FUGA" if "fuga" in why.lower() else "CENTRAL")
 
-    # ------------------------------------------------------------------ órdenes de la Central (punto 11)
+        ws_state.current_session = None
+        self.interrupted_sessions[session["req_id"]] = dict(session, ws=ws_state.id)
+        say(f"Riego {session['req_id']} en {ws_state.id} INTERRUMPIDO: {reason}", "red")
+        self.notify_fo(session["operator_id"], session["req_id"], "INCIDENT",
+                       f"Riego interrumpido en {ws_state.id}: {reason}. Llevaba {session['volume']:.2f} L. "
+                       f"El resumen final llegará cuando la WS se recupere.", ws=ws_state.id)
+        self.cmd(ws_state.id, "STOP", req_id=session["req_id"],
+                 reason="FUGA" if "fuga" in reason.lower() else "CENTRAL")
+
+
     def order(self, action, target, duration=30):
         with self.lock:
-            targets = list(self.ws) if target.upper() == "ALL" else [target]
+            targets = list(self.ws_states) if target.upper() == "ALL" else [target]
+
         for ws_id in targets:
-            if ws_id not in self.ws:
+            if ws_id not in self.ws_states:
                 say(f"La WS {ws_id} no existe", "red")
                 continue
             if action == "start":
                 self.start_watering(ws_id, "CENTRAL", int(duration))
             elif action == "block":
                 with self.lock:
-                    self.ws[ws_id].blocked = True
-                    self.db.q("UPDATE ws SET blocked=1 WHERE id=?", (ws_id,))
+                    self.ws_states[ws_id].blocked = True
+                    self.db.query("UPDATE WM_Stations SET blocked=1 WHERE id=?", (ws_id,))
                 self.cmd(ws_id, "BLOCK")
                 say(f"{ws_id} BLOQUEADA: Out of Service", "orange")
             elif action == "activate":
                 with self.lock:
-                    self.ws[ws_id].blocked = False
-                    self.db.q("UPDATE ws SET blocked=0 WHERE id=?", (ws_id,))
+                    self.ws_states[ws_id].blocked = False
+                    self.db.query("UPDATE WM_Stations SET blocked=0 WHERE id=?", (ws_id,))
                 self.cmd(ws_id, "ACTIVATE")
                 say(f"{ws_id} ACTIVADA", "green")
 
-    # ------------------------------------------------------------------ sockets con los monitores
+
     def socket_server(self):
-        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        srv.bind(("0.0.0.0", self.args.port))
-        srv.listen(50)
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(("0.0.0.0", self.args.port))
+        server.listen(MAX_CONEXIONES)
         say(f"Servidor de sockets escuchando en el puerto {self.args.port}", "green")
         while True:
-            conn, addr = srv.accept()
-            # servidor CONCURRENTE: un hilo por monitor
+            conn, addr = server.accept()
+
             threading.Thread(target=self.handle_monitor, args=(conn, addr), daemon=True).start()
 
     def handle_monitor(self, sock, addr):
@@ -320,37 +364,40 @@ class Central:
                 if code == "REGISTRO" and len(m) >= 3:
                     rid, loc = m[1], m[2]
                     with self.lock:
-                        new = rid not in self.ws
+                        new = rid not in self.ws_states
                         if new:
-                            self.ws[rid] = WS(rid, loc)
+                            self.ws_states[rid] = WSState(rid, loc)
                         else:
-                            self.ws[rid].location = loc
-                        self.db.q("INSERT INTO ws(id, location) VALUES (?, ?) "
-                                  "ON CONFLICT(id) DO UPDATE SET location=excluded.location", (rid, loc))
-                    say(f"[REGISTRO] WS {rid} {'registrada' if new else 'actualizada'} en '{loc}' (desde {addr[0]})", "cyan")
+                            self.ws_states[rid].location = loc
+                        self.db.query("INSERT INTO WM_Stations(id, location) VALUES (?, ?) "
+                                      "ON CONFLICT(id) DO UPDATE SET location=excluded.location", (rid, loc))
+                    say(f"[REGISTRO] WS {rid} {'registrada' if new else 'actualizada'} en '{loc}' "
+                        f"(desde {addr[0]})", "cyan")
                     fc.send(f"OK#WS {rid} {'registrada' if new else 'actualizada'}")
                 elif code == "AUTH" and len(m) >= 2:
                     rid = m[1]
                     with self.lock:
-                        ws = self.ws.get(rid)
-                        if ws is None:
+                        ws_state = self.ws_states.get(rid)
+                        if ws_state is None:
                             reason = "WS no registrada en WM_Central"
-                        elif ws.connected and time.time() - ws.last_seen < HEARTBEAT_TIMEOUT:
+                        elif ws_state.connected and time.time() - ws_state.last_seen < HEARTBEAT_TIMEOUT:
                             reason = "ya hay un monitor activo con ese ID"
                         else:
                             reason = None
                             ws_id = rid
-                            ws.connected, ws.last_seen, ws.conn_token = True, time.time(), token
-                            ws.health, ws.health_reason = "KO", "esperando al engine"
+                            ws_state.connected = True
+                            ws_state.last_seen = time.time()
+                            ws_state.connection_token = token
+                            ws_state.health, ws_state.health_msg = "KO", "esperando al engine"
                     if reason:
                         say(f"[AUTH] WS {rid} DENEGADA: {reason}", "red")
                         fc.send(f"DENIED#{reason}")
                         return
                     say(f"[AUTH] WS {rid} autenticada (monitor {addr[0]}:{addr[1]})", "green")
-                    fc.send(f"OK#{rid}#{ws.location}#{int(ws.blocked)}")
+                    fc.send(f"OK#{rid}#{ws_state.location}#{int(ws_state.blocked)}")
                 elif code == "STATUS" and ws_id and len(m) >= 3:
                     self.on_health(ws_id, token, m[2], m[3] if len(m) > 3 else "")
-                    fc.send(f"ACK#{int(self.ws[ws_id].blocked)}")
+                    fc.send(f"ACK#{int(self.ws_states[ws_id].blocked)}")
                 elif code == "FIN":
                     return
                 else:
@@ -365,56 +412,63 @@ class Central:
 
     def on_health(self, ws_id, token, health, reason):
         with self.lock:
-            ws = self.ws[ws_id]
-            if ws.conn_token is not token:
+            ws_state = self.ws_states[ws_id]
+            if ws_state.connection_token is not token:
                 return
-            ws.last_seen = time.time()
-            ws.connected = True
-            old, old_reason = ws.health, ws.health_reason
-            ws.health, ws.health_reason = health, reason
+            ws_state.last_seen = time.time()
+            ws_state.connected = True
+            old, old_reason = ws_state.health, ws_state.health_msg
+            ws_state.health, ws_state.health_msg = health, reason
+
             if old != health or (health == "KO" and old_reason != reason):
                 if health == "KO" and reason == "esperando al engine":
                     say(f"{ws_id}: monitor conectado, esperando a su engine", "yellow")
                 elif health == "KO":
                     say(f"*** {ws_id}: AVERÍA/FUGA reportada por el monitor ({reason}) ***", "red")
-                    self.cut_session(ws, f"fuga/avería detectada ({reason})")
+                    self.cut_session(ws_state, f"fuga/avería detectada ({reason})")
                 elif old_reason == "esperando al engine":
                     say(f"{ws_id}: monitor y engine conectados → WS DISPONIBLE", "green")
                 else:
                     say(f"{ws_id}: avería resuelta, WS operativa", "green")
 
-    def set_disconnected(self, ws_id, token, why):
+    def set_disconnected(self, ws_id, token, reason):
         with self.lock:
-            ws = self.ws.get(ws_id)
-            if not ws or ws.conn_token is not token or not ws.connected:
+            ws_state = self.ws_states.get(ws_id)
+            if not ws_state or ws_state.connection_token is not token or not ws_state.connected:
                 return
-            ws.connected = False
-            ws.conn_token = None
-            say(f"{ws_id} DESCONECTADA: {why}", "gray")
-            self.cut_session(ws, "WS desconectada de WM_Central")
+            ws_state.connected = False
+            ws_state.connection_token = None
+            say(f"{ws_id} DESCONECTADA: {reason}", "gray")
+            self.cut_session(ws_state, "WS desconectada de WM_Central")
 
-    # ------------------------------------------------------------------ hilos periódicos
+
     def watchdog(self):
         last_panel = None
         while True:
             time.sleep(1)
             now = time.time()
             with self.lock:
-                for ws in self.ws.values():
-                    if ws.connected and now - ws.last_seen > HEARTBEAT_TIMEOUT:
-                        self.set_disconnected(ws.id, ws.conn_token, "sin latidos del monitor")
-                expired = [(r, p) for r, p in self.pending.items() if now - p["t0"] > START_TIMEOUT]
-                for r, _ in expired:
-                    self.pending.pop(r)
-            for r, p in expired:
-                self.deny(r, p["op"], p["ws"], p["src"], "la WS no responde")
-                self.cmd(p["ws"], "STOP", req_id=r, reason="CENTRAL")
-            # latido para FO (saben que la Central vive) + lista de WS
+                for ws_state in self.ws_states.values():
+                    if ws_state.connected and now - ws_state.last_seen > HEARTBEAT_TIMEOUT:
+                        self.set_disconnected(ws_state.id, ws_state.connection_token,
+                                              "sin latidos del monitor")
+
+                expired = [(r, p) for r, p in self.pending_requests.items() if now - p["t0"] > START_TIMEOUT]
+                for req_id, _ in expired:
+                    self.pending_requests.pop(req_id)
+
+            for req_id, pending in expired:
+                self.deny(req_id, pending["operator_id"], pending["ws"], pending["source"],
+                          "la WS no responde")
+                self.cmd(pending["ws"], "STOP", req_id=req_id, reason="CENTRAL")
+
+
             if self.bus:
                 try:
                     self.bus.send(T_STATUS, {"t": "STATUS", "ws": self.snapshot()})
                 except Exception:
                     pass
+
             panel = self.panel_text()
             if panel != last_panel:
                 last_panel = panel
@@ -423,31 +477,38 @@ class Central:
     def snapshot(self):
         with self.lock:
             out = []
-            for ws in sorted(self.ws.values(), key=lambda w: w.id):
-                st = ws.state()
-                s = ws.session or {}
-                out.append({"id": ws.id, "location": ws.location, "state": st, "label": LABEL[st],
-                            "flow": s.get("flow", 0.0), "volume": s.get("volume", 0.0),
-                            "op": s.get("op", ""), "elapsed": s.get("elapsed", 0),
-                            "duration": s.get("duration", 0), "total": round(ws.total, 2),
-                            "reason": ws.health_reason if st == LEAK else "",
-                            "health": ws.health if ws.connected else None, "blocked": ws.blocked})
+            for ws_state in sorted(self.ws_states.values(), key=lambda w: w.id):
+                state = ws_state.status()
+                session = ws_state.current_session or {}
+                out.append({"id": ws_state.id, "location": ws_state.location, "state": state,
+                            "label": LABEL[state],
+                            "flow": session.get("flow", 0.0), "volume": session.get("volume", 0.0),
+                            "op": session.get("operator_id", ""), "elapsed": session.get("elapsed", 0),
+                            "duration": session.get("duration", 0), "total": round(ws_state.total_watered, 2),
+                            "reason": ws_state.health_msg if state == LEAK else "",
+                            "health": ws_state.health if ws_state.connected else None,
+                            "blocked": ws_state.blocked})
             return out
 
-    def recent_waterings(self, n=15):
-        """Riegos en curso (tabla sessions) + últimos terminados (tabla waterings) para el panel web."""
+    def recent_waterings(self, limit=15):
         with self.lock:
-            live = {ws.session["req_id"]: ws.session["volume"] for ws in self.ws.values() if ws.session}
-            cut = set(self.interrupted)
+            live = {w.current_session["req_id"]: w.current_session["volume"]
+                    for w in self.ws_states.values() if w.current_session}
+            cut = set(self.interrupted_sessions)
+
         rows = []
-        for req, ws_id, op, _dur, started in self.db.q("SELECT req_id, ws, op, duration, started FROM sessions"):
-            rows.append({"ts": started, "ws": ws_id, "op": op, "volume": live.get(req, 0.0), "reason": "",
-                         "state": "INTERRUMPIDO" if req in cut else "ACTIVE"})
-        for _req, ws_id, op, vol, _dur, reason, ended in self.db.q(
-                "SELECT * FROM waterings ORDER BY ended DESC LIMIT ?", (n,)):
-            rows.append({"ts": ended, "ws": ws_id, "op": op, "volume": vol, "reason": reason, "state": "FINALIZADO"})
+        for req_id, ws_id, operator_id, _duration, started in self.db.query(
+                "SELECT req_id, ws, operator_id, duration, started FROM Sessions"):
+            rows.append({"ts": started, "ws": ws_id, "op": operator_id, "volume": live.get(req_id, 0.0),
+                         "reason": "", "state": "INTERRUMPIDO" if req_id in cut else "ACTIVE"})
+
+        for _req_id, ws_id, operator_id, volume, _duration, reason, ended in self.db.query(
+                "SELECT * FROM Waterings ORDER BY ended DESC LIMIT ?", (limit,)):
+            rows.append({"ts": ended, "ws": ws_id, "op": operator_id, "volume": volume,
+                         "reason": reason, "state": "FINALIZADO"})
+
         rows.sort(key=lambda r: r["ts"] or 0, reverse=True)
-        return rows[:n]
+        return rows[:limit]
 
     def panel_text(self):
         rows = self.snapshot()
@@ -463,14 +524,15 @@ class Central:
                 detail = f"  {r['reason']}"[:20]
             else:
                 detail = " " * 20
-            txt = f"  {r['id']:<12}{r['location'][:17]:<18}{r['label']:<16}{detail:<20}{r['total']:>8.2f} L  {r['op']}"
+            txt = (f"  {r['id']:<12}{r['location'][:17]:<18}{r['label']:<16}{detail:<20}"
+                   f"{r['total']:>8.2f} L  {r['op']}")
             lines.append(f"{BG[r['state']]}{txt:<92}\033[0m")
         if not rows:
             lines.append("  (no hay WS registradas)")
         lines.append(color("  Órdenes (iniciar riego · bloquear · activar) desde el panel web", "gray"))
         return "\n".join(lines)
 
-    # ------------------------------------------------------------------ panel web
+
     def http_server(self):
         central = self
 
@@ -534,9 +596,9 @@ def main():
     print(color("=" * 64, "cyan"))
     print(color("  WM_Central · WaterManagement · SD 26/27", "bold"))
     print(color("=" * 64, "cyan"), flush=True)
-    c = Central(args)
-    for t in (c.http_server, c.socket_server, c.kafka_thread, c.watchdog):
-        threading.Thread(target=t, daemon=True).start()
+    central = Central(args)
+    for target in (central.http_server, central.socket_server, central.kafka_thread, central.watchdog):
+        threading.Thread(target=target, daemon=True).start()
     say(f"Panel web escuchando en el puerto {args.http_port}", "green")
     try:
         while True:
