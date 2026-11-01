@@ -16,7 +16,7 @@ class FO:
         self.bus = None
         self.status = []            # última lista de WS publicada por Central
         self.last_status = 0.0
-        self.waiters = {}           # req_id -> {"event", "result", "authorized"}
+        self.waiters = {}
         self.lock = threading.Lock()
         self.central_was_up = None
 
