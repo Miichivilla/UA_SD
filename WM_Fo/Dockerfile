@@ -5,4 +5,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 ENV PYTHONUNBUFFERED=1
 #   python wm_fo.py --kafka HOST:PUERTO --id FO_01 [--file solicitudes.txt]
-CMD ["python", "wm_fo.py", "--help"]
+CMD ["python", "WM_FO.py", "--help"]
