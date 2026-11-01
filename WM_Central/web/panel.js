@@ -161,7 +161,7 @@ function renderCards(list) {
 function renderEvents(list) {
   const ul = $("events");
   const prev = ul.scrollTop;
-  const atTop = prev < 10;                         
+  const atTop = prev < 10;
   ul.innerHTML = "";
   for (const ev of list.slice().reverse()) {          // el más reciente arriba
     const li = el("li", ev.col || "");
@@ -203,13 +203,24 @@ function setConn(ok, text) {
 }
 
 //bucle de refresco
+const REFRESH_MS = 1000;
+const FETCH_TIMEOUT_MS = 4000;
+const MAX_FAILS = 3;          // fallos SEGUIDOS antes de mostrar "Sin conexión" (~3 s)
+
 async function getJSON(url) {
-  const r = await fetch(url, { cache: "no-store" });
-  if (!r.ok) throw new Error(r.status);
-  return r.json();
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const r = await fetch(url, { cache: "no-store", signal: ctrl.signal });
+    if (!r.ok) throw new Error(r.status);
+    return await r.json();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 let tick = 0;
+let fails = 0;
 async function refresh() {
   try {
     const state = await getJSON("/api/state");
@@ -217,10 +228,14 @@ async function refresh() {
     setConn(state.kafka, state.kafka ? "Kafka OK" : "Kafka caído");
     renderEvents(await getJSON("/api/events"));
     if (tick++ % 2 === 0) renderWaterings(await getJSON("/api/waterings"));
+    fails = 0;
   } catch {
-    setConn(false, "Sin conexión con WM_Central");
+    // Un fallo suelto (p. ej. un 502 momentáneo del proxy de Railway) no significa
+    // que la Central esté caída: solo se avisa si falla varias veces seguidas.
+    if (++fails >= MAX_FAILS) setConn(false, "Sin conexión con WM_Central");
+  } finally {
+    setTimeout(refresh, REFRESH_MS);   // la siguiente petición no empieza hasta que acaba esta
   }
 }
 
 refresh();
-setInterval(refresh, 1000);
